@@ -63,32 +63,37 @@ def board_levers(done):
     return out
 
 
-levers = tsv_levers()
-for a, texts in board_levers(landed()).items():
-    levers.setdefault(a, []).extend(texts)
+def main():
+    levers = tsv_levers()
+    for a, texts in board_levers(landed()).items():
+        levers.setdefault(a, []).extend(texts)
 
-doc = "".join(open(p, encoding="utf-8", errors="ignore").read().lower() for p in DOCS if os.path.exists(p))
-declined = {}
-if os.path.exists(DECLINED):
-    for line in open(DECLINED, encoding="utf-8", errors="ignore"):
-        p = line.split(None, 1)
-        if p and HEX8.fullmatch(p[0]):
-            declined[p[0].lower()] = p[1].strip() if len(p) > 1 else ""
+    doc = "".join(open(p, encoding="utf-8", errors="ignore").read().lower() for p in DOCS if os.path.exists(p))
+    declined = {}
+    if os.path.exists(DECLINED):
+        for line in open(DECLINED, encoding="utf-8", errors="ignore"):
+            p = line.split(None, 1)
+            if p and HEX8.fullmatch(p[0]):
+                declined[p[0].lower()] = p[1].strip() if len(p) > 1 else ""
 
-missing = sorted(a for a in levers if a not in doc and a not in declined)
-if "--keys" in sys.argv:
+    missing = sorted(a for a in levers if a not in doc and a not in declined)
+    if "--keys" in sys.argv:
+        for a in missing:
+            print("%s %s" % (a, levers[a][0][:150]))
+        return 1 if missing else 0
+
+    print("%d lever address(es), %d promoted, %d declined, %d UNPROMOTED"
+          % (len(levers), sum(1 for a in levers if a in doc), len(declined), len(missing)))
     for a in missing:
-        print("%s %s" % (a, levers[a][0][:150]))
-    sys.exit(1 if missing else 0)
+        print("  %s  %s" % (a, levers[a][0][:100]))
+        if "--verbose" in sys.argv:
+            for t in levers[a][1:]:
+                print("             %s" % t[:100])
+    if missing:
+        print("\nPromote each into worker_src/core.md CITING ITS ADDRESS, or add it to")
+        print("wlog/levers_declined.txt as `<addr> <why it is not worth a recipe slot>`.")
+    return 1 if missing else 0
 
-print("%d lever address(es), %d promoted, %d declined, %d UNPROMOTED"
-      % (len(levers), sum(1 for a in levers if a in doc), len(declined), len(missing)))
-for a in missing:
-    print("  %s  %s" % (a, levers[a][0][:100]))
-    if "--verbose" in sys.argv:
-        for t in levers[a][1:]:
-            print("             %s" % t[:100])
-if missing:
-    print("\nPromote each into worker_src/core.md CITING ITS ADDRESS, or add it to")
-    print("wlog/levers_declined.txt as `<addr> <why it is not worth a recipe slot>`.")
-sys.exit(1 if missing else 0)
+
+if __name__ == "__main__":
+    sys.exit(main())
