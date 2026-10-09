@@ -1075,8 +1075,12 @@ def _fullstop_sees_watchers():
     except subprocess.TimeoutExpired:
         return "fullstop --dry did not finish in 180s"
     finally:
-        subprocess.run(["taskkill", "/PID", str(decoy.pid), "/T", "/F"],
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/PID", str(decoy.pid), "/T", "/F"],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        else:
+            decoy.kill()
+            decoy.wait()
         try:
             os.remove(log)
         except OSError:

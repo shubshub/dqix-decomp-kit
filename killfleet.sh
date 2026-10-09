@@ -28,8 +28,9 @@ DRY=0
 say() { [ "$DRY" -eq 1 ] && echo "  would kill: $*" || echo "  killed: $*"; }
 
 posix_pids() {   # $1 = cmdline substring
-  for p in $(ps 2>/dev/null | awk 'NR>1{print $1}'); do
-    c=$(tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null) || continue
+  # /proc, not `ps`: Linux `ps` shows only this terminal's processes (Git Bash's shows them all)
+  for p in $(ls /proc | grep -E '^[0-9]+$'); do
+    c=$(tr '\0' ' ' 2>/dev/null < "/proc/$p/cmdline") || continue
     case "$c" in *"$1"*) echo "$p";; esac
   done
 }
@@ -56,20 +57,16 @@ kill_windows_workers() {
   # escaped, double-quoted) reported "0 alive" and looked like confirmation.
   # Measured 08-17: `--dry` said "would kill 0" with 3 workers plainly running.
   # Match in Where-Object from a DOUBLE-quoted string with $_ escaped.
-  local ps1="Get-CimInstance Win32_Process | Where-Object { \$_.Name -eq 'claude.exe' -and \$_.CommandLine -like '*DQIX decomp worker*' }"
-  if [ "$only_orphans" = "1" ]; then
-    # orphan = its parent process no longer exists
-    ps1="$ps1 | Where-Object { -not (Get-Process -Id \$_.ParentProcessId -ErrorAction SilentlyContinue) }"
-  fi
+  # procq.py asks Windows (or /proc) directly; orphan = its parent process no longer exists.
+  local q=(--worker 'DQIX decomp worker')
+  [ "$only_orphans" = "1" ] && q+=(--orphans)
+  local n
   if [ "$DRY" -eq 1 ]; then
-    local n
-    n=$(powershell -NoProfile -Command "@($ps1).Count" 2>/dev/null | tr -d '\r')
-    say "${n:-0} claude.exe workers (windows)"
+    n=$(python "$KIT/procq.py" --count "${q[@]}" 2>/dev/null | tr -d '\r')
   else
-    local n
-    n=$(powershell -NoProfile -Command "\$x=@($ps1); \$x | ForEach-Object { Stop-Process -Id \$_.ProcessId -Force -ErrorAction SilentlyContinue }; \$x.Count" 2>/dev/null | tail -1 | tr -d '\r')
-    say "${n:-0} claude.exe workers (windows)"
+    n=$(python "$KIT/procq.py" --kill "${q[@]}" 2>/dev/null | tr -d '\r')
   fi
+  say "${n:-0} claude workers"
 }
 
 echo "killfleet: mode=$MODE"
@@ -99,6 +96,6 @@ case "$MODE" in
 esac
 
 sleep 3
-left=$(powershell -NoProfile -Command "@(Get-CimInstance Win32_Process -Filter \"Name='claude.exe'\" | Where-Object { \$_.CommandLine -like '*DQIX decomp worker*' }).Count" 2>/dev/null | tr -d '\r')
-echo "  verify: ${left:-?} worker claude.exe still alive (want 0)"
+left=$(python "$KIT/procq.py" --count --worker 'DQIX decomp worker' 2>/dev/null | tr -d '\r')
+echo "  verify: ${left:-?} worker claude still alive (want 0)"
 [ "${left:-1}" = "0" ] || echo "  WARNING: workers survived — investigate before assuming the fleet is down"

@@ -22,19 +22,9 @@ case "$KIND" in
   *)    PAT='pull_worker\.sh|pull_all\.sh|supervise\.sh|run_all\.sh|integrate_fast\.sh|integrate_all\.sh|finish_wave\.sh|ov_recover\.py|repairsweep\.py|colorsweep\.py|proppurge\.py|transmassive\.py' ;;
 esac
 
-powershell.exe -NoProfile -Command "
-  \$all = Get-CimInstance Win32_Process
-  \$byid = @{}; foreach (\$q in \$all) { \$byid[[int]\$q.ProcessId] = \$q }
-  \$self = @{}; \$self[\$PID] = 1; \$c = \$PID
-  for (\$i = 0; \$i -lt 12; \$i++) {
-    if (-not \$byid.ContainsKey(\$c)) { break }
-    \$self[\$c] = 1; \$c = [int]\$byid[\$c].ParentProcessId }
-  \$hit = @(\$all | Where-Object {
-    -not \$self.ContainsKey([int]\$_.ProcessId) -and
-    \$_.CommandLine -match '$PAT' -and
-    \$_.CommandLine -notmatch 'Win32_Process|psq\.sh' })
-  if ('$MODE' -eq '--list') {
-    \$hit | ForEach-Object {
-      \$c2 = \$_.CommandLine; if (\$c2.Length -gt 100) { \$c2 = \$c2.Substring(0,100) }
-      '{0}  {1}' -f \$_.ProcessId, \$c2 }
-  } else { \$hit.Count }" 2>/dev/null | tr -d '\r' | sed '/^$/d'
+if [ "$MODE" = "--list" ]; then
+  python "$KIT/procq.py" --list --match "$PAT" --notmatch 'psq\.sh' 2>/dev/null \
+    | awk -F'@@@' '{print $1 "  " substr($3, 1, 100)}'
+else
+  python "$KIT/procq.py" --count --match "$PAT" --notmatch 'psq\.sh' 2>/dev/null
+fi

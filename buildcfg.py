@@ -55,8 +55,36 @@ _cfg = _load()
 
 MWCC_VERSION = _cfg.MWCC_VERSION
 DECOMP_ME_COMPILER = _cfg.DECOMP_ME_COMPILER
-CC = f"{REPO}/tools/mwccarm/{MWCC_VERSION}/mwccarm.exe"
-AS = f"{REPO}/tools/mwccarm/{MWCC_VERSION}/mwasmarm.exe"
+
+
+def native(exe):
+    '''A path that runs the Windows tool `exe` as argv[0]: the .exe itself on Windows; elsewhere a
+    wrapper script under $SP/wibo/ that hands it to the decomp's wibo (configure.py's own -w loader).
+
+    Every caller builds `[CC] + FLAGS`, so a wrapper keeps them all unchanged. A missing .exe is
+    returned as-is, so `os.path.exists(CC)` still reports an unfetched toolchain.
+    '''
+    if os.name == "nt" or not os.path.isfile(exe):
+        return exe
+    loader = _cfg.WINE if os.path.isabs(_cfg.WINE) else os.path.join(REPO, _cfg.WINE)
+    wrapper = os.path.join(_kp.SP, "wibo", os.path.relpath(exe, REPO))
+    body = f'#!/bin/sh\nexec "{os.path.abspath(loader)}" "{os.path.abspath(exe)}" "$@"\n'
+    try:
+        current = open(wrapper, encoding="utf-8").read()
+    except OSError:
+        current = None
+    if current != body:
+        os.makedirs(os.path.dirname(wrapper), exist_ok=True)
+        tmp = f"{wrapper}.{os.getpid()}"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.write(body)
+        os.chmod(tmp, 0o755)
+        os.replace(tmp, wrapper)
+    return wrapper
+
+
+CC = native(f"{REPO}/tools/mwccarm/{MWCC_VERSION}/mwccarm.exe")
+AS = native(f"{REPO}/tools/mwccarm/{MWCC_VERSION}/mwasmarm.exe")
 AS_FLAGS = _cfg.AS_FLAGS.split()
 FLAGS = (_cfg.CC_FLAGS + " " + _cfg.CC_INCLUDES + " " + _mwcc_defines(_cfg)).split()
 CODEGEN_PRAGMA = re.compile(r"(?m)^[ \t]*#[ \t]*pragma[ \t]+(?!(?:define_section|section|once)\b)(\w+)")
@@ -82,7 +110,7 @@ def lcf_symbols():
 
 
 def cc_path(version):
-    return f"{REPO}/tools/mwccarm/{version}/mwccarm.exe" if version else CC
+    return native(f"{REPO}/tools/mwccarm/{version}/mwccarm.exe") if version else CC
 
 
 if __name__ == "__main__":

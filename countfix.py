@@ -34,7 +34,7 @@ def function_locations():
 def diff_unit(unit):
     if os.path.exists(TMP):
         os.remove(TMP)
-    subprocess.run([f"{REPO}/objdiff-cli.exe", "diff", "-p", REPO, "-u", unit, "-o", TMP, "--format", "json"],
+    subprocess.run([f"{REPO}/objdiff-cli{'.exe' if os.name == 'nt' else ''}", "diff", "-p", REPO, "-u", unit, "-o", TMP, "--format", "json"],
                    capture_output=True, cwd=REPO)
     if not os.path.exists(TMP):
         return []

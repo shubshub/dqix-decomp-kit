@@ -108,10 +108,9 @@ def fleet():
     top of a live fleet, which is the one state this project must never reach. Ask Windows for the
     command lines instead.
     """
-    out = sh("powershell", "-NoProfile", "-Command",
-             "Get-CimInstance Win32_Process | ForEach-Object "
-             "{ \"$($_.ProcessId)|$($_.ParentProcessId)|$($_.CommandLine)\" }")
-    if not out:
+    import procq
+    table = procq.snapshot()
+    if not table:
         return -1, -1                            # unknown, not zero -- never claim a false death
 
     # A PROCESS THAT MENTIONS THE SCRIPT IS NOT A PROCESS RUNNING IT, TWICE OVER:
@@ -120,11 +119,7 @@ def fleet():
     #     command line under MSYS, so it looks like a second driver.
     # Counting naively said FOUR drivers, then TWO, and acting on the two got a running repair sweep
     # killed as an imposter. Count only processes whose PARENT is not itself a match.
-    rows = []
-    for line in out.splitlines():
-        parts = line.split("|", 2)
-        if len(parts) == 3 and parts[0].strip().isdigit():
-            rows.append((parts[0].strip(), parts[1].strip(), parts[2]))
+    rows = [(str(r["pid"]), str(r["ppid"]), r["cmd"]) for r in table]
 
     def roots(name):
         hits = [r for r in rows if name in r[2] and " -c " not in r[2] and "ForEach-Object" not in r[2]]

@@ -152,7 +152,7 @@ for i in 1 2 3 4 5 6 7 8; do
   # build deleted 24 real symbols the branch was adding.
   if ! grep -q "^FAILED.*arm9\.o" "$SP/wlog/merge_check.log" \
      && ! grep -qE "cpp:[0-9]+:" "$SP/wlog/merge_check.log"; then
-    ./dsd.exe check symbols --config-path config/usa/arm9/config.yaml \
+    "./dsd$([ -f ./dsd.exe ] && echo .exe)" check symbols --config-path config/usa/arm9/config.yaml \
         --elf-path build/usa/arm9.o --fail 2>&1 \
       | grep -oE "Symbol '[^']+'" | cut -d"'" -f2 | sort -u > "$SP/wlog/stale_symbols.txt"
     # A link that SUCCEEDS still reports the whole table when the elf is stale, and dropping it

@@ -4,14 +4,26 @@
 
 | component | tested | notes |
 |---|---|---|
-| OS | Windows 11 | fleet scripts list processes with PowerShell `Get-CimInstance`; Windows only |
-| shell | Git Bash | the `.sh` scripts are bash; most take Windows paths from `pwd -W`, with a POSIX fallback |
-| Python | 3.10 | `kit_init.py` requires 3.10 or newer; the decomp README asks for 3.11 or newer |
+| OS | Windows 11, Ubuntu 24.04 | `procq.py` reads processes through one CIM query on Windows, `/proc` on Linux |
+| shell | Git Bash, bash | the `.sh` scripts are bash; most take Windows paths from `pwd -W`, with a POSIX fallback |
+| Python | 3.10, 3.12 | `kit_init.py` requires 3.10 or newer; the decomp README asks for 3.11 or newer |
 | `git`, `ninja`, `bash` | on PATH | `kit_init.py` checks for them |
 | Claude Code CLI `claude` | on PATH, logged in | needed for the fleet and the workflows; Codex and other agents read `AGENTS.md` and `.agents/skills/` instead |
 
-The per-function tools run `tools/mwccarm/<version>/mwccarm.exe` from the decomp directly. They are
-untested on anything but Windows.
+On Windows the per-function tools run `tools/mwccarm/<version>/mwccarm.exe` from the decomp directly.
+
+### Linux
+
+- The scripts call `python`, which Ubuntu does not provide. Use a venv and activate it in every shell
+  that runs the kit (or `apt install python-is-python3`):
+
+      python3 -m venv ../.venv && source ../.venv/bin/activate
+
+- `buildcfg.py` runs every Windows tool through the decomp's `wibo`, the loader its own build uses.
+  It writes a two-line wrapper per tool under `$SP/wibo/` and hands that path out as `CC`/`AS`, so
+  callers are unchanged. `wibo` and the compiler are fetched by the decomp's first `ninja` build.
+- `frida/` and the `pad/renum/` forcing tools hook a native Windows `mwccarm.exe` and do not run on
+  Linux.
 
 On Windows, verify `python`, `ninja`, and `bash` in the process environment. Use Git's actual
 `usr/bin/bash.exe`, not the WSL `bash.exe` in System32 or Git's `bin/bash.exe` launcher.

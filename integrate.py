@@ -89,7 +89,7 @@ except IOError:
 
 def cc_for(path):
     v = _CC_OVR.get(os.path.basename(str(path)))
-    return f"{REPO}/tools/mwccarm/{v}/mwccarm.exe" if v else CC
+    return buildcfg.cc_path(v)
 
 
 def _read_keep_nl(p):
