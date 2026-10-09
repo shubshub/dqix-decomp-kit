@@ -9,8 +9,22 @@ import sys
 SP = _kp.SP
 KIT = _kp.KIT
 TSV = os.environ.get("LEVERCHECK_TSV", f"{SP}/wlog/levers.tsv")
-DOCS = os.environ.get("LEVERCHECK_DOCS",
-                      os.pathsep.join((f"{KIT}/worker_src/core.md", f"{KIT}/worker_src/deadends.md"))).split(os.pathsep)
+
+
+def doc_paths(kit=None):
+    """worker_src files a citation is read from.
+
+    The default used to join the two paths with os.pathsep and split them again. On Linux that
+    separator is ':', so a checkout path containing one — this tree's does — became several
+    nonexistent pieces and every citation looked unpromoted.
+    """
+    if kit is None and os.environ.get("LEVERCHECK_DOCS"):
+        return [p for p in os.environ["LEVERCHECK_DOCS"].split(os.pathsep) if p]
+    root = kit or KIT
+    return [os.path.join(root, "worker_src", "core.md"), os.path.join(root, "worker_src", "deadends.md")]
+
+
+DOCS = doc_paths()
 DECLINED = os.environ.get("LEVERCHECK_DECLINED", f"{SP}/wlog/levers_declined.txt")
 BOARDS = os.environ.get("LEVERCHECK_BOARDS", f"{SP}/handwork")
 CFG = os.environ.get("LEVERCHECK_CFG", (_kp.REPO + "/config/usa/arm9"))
