@@ -13,6 +13,10 @@ directory:
 A session that runs from another directory sets `DQIX_KIT` to the checkout; skills and workflows
 read it.
 
+On Linux everything here works except the fleet, `frida/` and `pad/renum/`; `buildcfg.py` runs the
+Win32 toolchain through the runner the decomp's own `configure.py` names, and the `.sh` scripts
+resolve their interpreter and `ninja` through `kitpaths.py`. [docs/LINUX.md](docs/LINUX.md).
+
 ## Update the kit on every stop
 
 Update at the start of every session and every time you stop:

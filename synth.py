@@ -148,7 +148,7 @@ def attempt(mod, addr, quiet=False):
         autorepair.repair(p, mod, addr)
     except Exception:
         pass
-    r = subprocess.run(["python", f"{KIT}/wgate.py", mod, addr, p], capture_output=True, text=True)
+    r = subprocess.run([sys.executable, f"{KIT}/wgate.py", mod, addr, p], capture_output=True, text=True)
     if (r.stdout + r.stderr).strip().startswith("MATCH"):
         d = f"{SP}/hold_main" if mod == "main" else f"{SP}/hold_ov{mod}"
         os.makedirs(d, exist_ok=True)

@@ -14,6 +14,12 @@ Tested on Windows 11, Git Bash, Python 3.10. The per-function tools are plain Py
 decomp's `mwccarm.exe` directly; untested on any other system. The fleet scripts list processes with
 PowerShell `Get-CimInstance` and run only on Windows.
 
+**Debian/Linux is supported for everything except the fleet** — the gate, the sweeps, the landing
+scripts and the docs all run there. `mwccarm.exe` is a Win32 binary everywhere, so the decomp builds
+it under [wibo](https://github.com/decompals/wibo); the kit takes the runner the build uses and
+puts it in front of the compiler for every tool that compiles a candidate. The fleet, `frida/` and
+`pad/renum/` still need Windows. [docs/LINUX.md](docs/LINUX.md) has the setup.
+
 ## Quickstart
 
 Clone both repositories side by side. The kit finds the decomp at `../dqix-decomp`, or at
@@ -93,6 +99,7 @@ explains every step.
 ## Docs
 
 - [docs/SETUP.md](docs/SETUP.md) — prerequisites, environment, reference decomps, Frida
+- [docs/LINUX.md](docs/LINUX.md) — Debian/Linux: the Win32 runner, the virtualenv, what the fleet still needs Windows for
 - [docs/WORKFLOW.md](docs/WORKFLOW.md) — one function from address to commit
 - [docs/IMPROVEMENT_LOOP.md](docs/IMPROVEMENT_LOOP.md) — how every crack becomes a rule or automation the next session gets for free
 - [docs/FLEET.md](docs/FLEET.md) — the autonomous pipeline, knobs, stopping, cost

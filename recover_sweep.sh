@@ -14,8 +14,15 @@
 # Serial by construction — ov_recover mutates config/ and gates a full `ninja check`; two at once
 # corrupt each other. Usage: bash recover_sweep.sh
 KIT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && { pwd -W 2>/dev/null || pwd; })"
-SP="$(python "$KIT/kitpaths.py" state)"
-REPO="$(python "$KIT/kitpaths.py" repo)"
+# The interpreter this kit is running under. A bare `python` is python3 under Git Bash on
+# Windows and does not exist at all on a Debian that keeps its packages in a virtualenv, so
+# every call below asks the kit which interpreter to use instead of assuming one.
+PY="${DQIX_PYTHON:-$(python3 "$KIT/kitpaths.py" py)}"
+# ninja and anything else installed beside it live in the same directory, and they are on
+# PATH only while the venv is ACTIVATED. Put them there for this script's children.
+export PATH="$(dirname "$PY"):$PATH"
+SP="$("$PY" "$KIT/kitpaths.py" state)"
+REPO="$("$PY" "$KIT/kitpaths.py" repo)"
 cd "$REPO" || exit 2
 LOG="$SP/wlog/sweep.log"
 echo "=== recover_sweep $(date '+%m-%d %H:%M:%S') ===" >> "$LOG"
@@ -40,18 +47,18 @@ _age=999999
 [ -f "$_stamp" ] && _age=$(( $(date +%s) - $(stat -c %Y "$_stamp") ))
 if [ "$_age" -gt 10800 ]; then          # at most once every 3h
   echo "--- zero-token producers (last run ${_age}s ago)" >> "$LOG"
-  timeout 900  python "$KIT/synth.py" --sweep 64    >> "$LOG" 2>&1
-  timeout 3600 python "$KIT/translate.py" --sweep 256 >> "$LOG" 2>&1
-  timeout 1800 python "$KIT/scaffold.py" --all       >> "$LOG" 2>&1
+  timeout 900  "$PY" "$KIT/synth.py" --sweep 64    >> "$LOG" 2>&1
+  timeout 3600 "$PY" "$KIT/translate.py" --sweep 256 >> "$LOG" 2>&1
+  timeout 1800 "$PY" "$KIT/scaffold.py" --all       >> "$LOG" 2>&1
   touch "$_stamp"
   echo "--- zero-token producers done" >> "$LOG"
 fi
 # rank modules by how many DISTINCT matched addrs they hold that are not yet delinked
-MODS=$(python "$KIT/recoverable.py" 2>/dev/null | awk '$2>0{print $1}')
+MODS=$("$PY" "$KIT/recoverable.py" 2>/dev/null | awk '$2>0{print $1}')
 [ -z "$MODS" ] && { echo "nothing recoverable" >> "$LOG"; exit 0; }
 
 for M in $MODS; do
-  N=$(python "$KIT/recoverable.py" "$M" 2>/dev/null | awk '{print $2}')
+  N=$("$PY" "$KIT/recoverable.py" "$M" 2>/dev/null | awk '{print $2}')
   [ -z "$N" ] && N=0
   [ "$N" -lt 1 ] && continue
   echo "--- $M: $N recoverable" >> "$LOG"
@@ -69,7 +76,7 @@ done
 # fail-soft: a missing/short report must never make the sweep look like it errored — run_all reads the
 # exit code of the last command, and a bare `python -c` that raises would report a failed sweep after
 # a run that actually committed everything it found.
-python -c "import json;m=json.load(open('build/usa/report.json'))['measures'];print('sweep end: %.2f%% (%d/%d)'%(m['matched_functions_percent'],m['matched_functions'],m['total_functions']))" >> "$LOG" 2>/dev/null \
+"$PY" -c "import json;m=json.load(open('build/usa/report.json'))['measures'];print('sweep end: %.2f%% (%d/%d)'%(m['matched_functions_percent'],m['matched_functions'],m['total_functions']))" >> "$LOG" 2>/dev/null \
   || echo "sweep end: (report unavailable)" >> "$LOG"
 tail -1 "$LOG"
 exit 0

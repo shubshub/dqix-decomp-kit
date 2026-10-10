@@ -41,6 +41,7 @@ import sys
 
 REPO = _kp.REPO
 LOG = sys.argv[1]
+_MWLD = re.compile(r"mwldarm(?:\.exe)?:\s*")
 os.chdir(REPO)
 
 
@@ -333,8 +334,11 @@ def force_extern_c(text, sym, cxx=True):
 
 
 log = open(LOG, encoding="utf-8", errors="replace").read()
-body = "\n".join(l.split("mwldarm.exe: ", 1)[-1]
-                 for l in log.splitlines() if "mwldarm.exe: " in l and "warning:" not in l)
+# The linker's own prefix, matched with the suffix optional: mwldarm.exe on Windows and under the
+# Linux runner alike. Matching the exact spelling meant a log the host spelled differently parsed as
+# zero undefined symbols, and the repair pass then reported "0 rewrites" and succeeded.
+body = "\n".join(_MWLD.split(l, 1)[-1]
+                 for l in log.splitlines() if _MWLD.search(l) and "warning:" not in l)
 flat = re.sub(r"\s+", " ", body)
 UNDEFINED = []
 for part in re.split(r"Undefined : ", flat)[1:]:

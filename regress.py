@@ -19,6 +19,7 @@ import importlib.util
 import json
 import os
 import re
+import shutil
 import sys
 import tempfile
 import time
@@ -1307,9 +1308,7 @@ def _staging_sweep_keeps_match():
         os.makedirs(os.path.join(d, "wip"))
         with open(os.path.join(d, "wip", "0201aaaa.cpp"), "w", encoding="utf-8") as fh:
             fh.write("// USA: func_0201aaaa\n")
-        bash = "C:/Program Files/Git/bin/bash.exe"
-        if not os.path.isfile(bash):
-            bash = "bash"
+        bash = shutil.which("bash") or ("C:/Program Files/Git/bin/bash.exe" if os.name == "nt" else "bash")
         r = subprocess.run([bash, "-c", script], capture_output=True, text=True)
         if r.returncode != 0:
             return "sweep block failed to run: %s" % (r.stderr or "").strip()[:200]
@@ -1449,6 +1448,13 @@ def _dataown_local_name():
 def _cf_multi_moves():
     import shutil
     import subprocess
+    if os.name != "nt":
+        # colorforce spawns the Win32 compiler and hooks its own x86 code inside that process, at
+        # addresses belonging to that exact binary. There is no such process on this host, so the
+        # probe cannot run here: SKIP, never FAIL -- and say so, so a green line is not read as a
+        # passing probe.
+        print("skip  cf_multi needs the Windows colour-forcing probe (frida/colorforce.py)")
+        return None
     tmp = tempfile.mkdtemp()
     src = os.path.join(tmp, "probe.cpp")
     shutil.copy(os.path.join(KIT, "regress_fixtures", "DispatchSumOrCopyHalfwords_0218ee38.cpp"), src)
@@ -2007,6 +2013,8 @@ def _finish_bulk_snapshot_behaviour():
                 out.write("// USA: func_" + addr + "\n")
         with open(os.path.join(q,".done_main"),"w") as out: out.write("02000000\n")
         body = 'cd "$1" || exit 99; SP="$1/state"; Q="$1/quarantine"; OV=main; TAGPRE=func_; SRCDIR="src/Combat/Main"; calls="$1/calls"\n'
+        # The block calls the interpreter the script resolved at its top; hand it the same one here.
+        body += f'PY="{sys.executable}"\n'
         # Record actual quarantine moves without changing their arguments or result.
         body += 'mv() { printf "%s\\n" "$1" >> "$SP/../moves"; command mv "$@"; }\n'
         body += 'git() { echo x >> "$calls"; '
@@ -2043,7 +2051,10 @@ def _finish_bulk_snapshot_behaviour():
        "malformed config line sent the wave into sequential full-ROM bisection")
 def _culprits_from_red_logs():
     c = load("culprits")
-    mwld = ".\\tools\\mwccarm\\2.0\\sp2p2\\mwldarm.exe: "
+    # A red build log names its tools with the SEPARATOR THIS HOST PRINTS, so the fixture models
+    # the log a run here actually produces rather than always a Windows one.
+    sep = os.sep
+    mwld = f".{sep}tools{sep}mwccarm{sep}2.0{sep}sp2p2{sep}mwldarm.exe: "
     cands = {"src/Combat/Overlay_28/func_ov028_021d9494.cpp": ("028", "021d9494"),
              "src/Combat/Overlay_0/ProcessCombatTurn_0215d63c.cpp": ("000", "0215d63c"),
              "src/Combat/Overlay_17/func_ov017_021d4e38.cpp": ("017", "021d4e38"),
@@ -2052,7 +2063,7 @@ def _culprits_from_red_logs():
     logs = {
         "021d9494": mwld + 'Multiply-defined: "func_ov028_021d9494"\n' + mwld + "in Committed_021d9494.o\n"
                     + mwld + "Previously defined in\n" + mwld + "func_ov028_021d9494.o\n",
-        "0215d63c": "src\\Combat\\Overlay_0\\ProcessCombatTurn_0215d63c.cpp:726: undefined label 'L_0da4'\n",
+        "0215d63c": f"src{sep}Combat{sep}Overlay_0{sep}ProcessCombatTurn_0215d63c.cpp:726: undefined label 'L_0da4'\n",
         "021d4e38": mwld + "Linker command file error at line 10100\n" + mwld + "File not found: func_ov017_021d4e38.o\n",
         "02043204": mwld + "Undefined :\n" + mwld + '"ReinitController02043204(MessageWork*,\n' + mwld + 'int)"\n'
                     + mwld + 'Referenced from\n' + mwld + '"Committed_02050000()" in\n' + mwld + "Committed_02050000.o\n",

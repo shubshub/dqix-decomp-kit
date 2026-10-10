@@ -264,7 +264,7 @@ def attempt(mod, addr, stage=False):
         return None
     p = f"{SP}/lab/trans_{addr}.cpp"
     open(p, 'w', encoding='utf-8').write(src)
-    r = subprocess.run(["python", f"{KIT}/wgate.py", mod, addr, p], capture_output=True, text=True)
+    r = subprocess.run([sys.executable, f"{KIT}/wgate.py", mod, addr, p], capture_output=True, text=True)
     o = (r.stdout + r.stderr).strip()
     if o.startswith("MATCH"):
         if stage:

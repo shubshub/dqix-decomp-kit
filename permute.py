@@ -104,7 +104,7 @@ def render(order, split_set):
 def gate(text):
     p = f"{SP}/lab/perm_{os.getpid()}.cpp"
     open(p, 'w', encoding='utf-8').write(head + '\n'.join(text) + tail)
-    r = subprocess.run(["python", f"{KIT}/wgate.py", MOD, ADDR, p],
+    r = subprocess.run([sys.executable, f"{KIT}/wgate.py", MOD, ADDR, p],
                        capture_output=True, text=True)
     o = (r.stdout + r.stderr).strip()
     if o.startswith("MATCH"):

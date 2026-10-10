@@ -99,18 +99,35 @@ def verdicts(limit=12):
     return rows[:limit]
 
 
+def _proc_table():
+    """`pid|ppid|cmdline` for every live process, from /proc."""
+    rows = []
+    for entry in glob.glob("/proc/[0-9]*"):
+        try:
+            pid = os.path.basename(entry)
+            with open(f"{entry}/stat", encoding="utf-8", errors="replace") as fh:
+                ppid = fh.read().rsplit(") ", 1)[1].split()[1]
+            with open(f"{entry}/cmdline", "rb") as fh:
+                cmd = fh.read().replace(b"\0", b" ").decode("utf-8", "replace").strip()
+        except (OSError, IndexError):
+            continue                          # the process exited between the glob and the read
+        rows.append((pid, ppid, cmd))
+    return "\n".join("|".join(r) for r in rows)
+
+
 def fleet():
     """Count live drivers and workers BY COMMAND LINE.
 
     `ps -W` under Git Bash lists Windows processes without their arguments, so matching it against
     `pull_all.sh` finds nothing and this reported `drivers 0 workers 0 -- the run died` while a
     worker was mid-function. A false death notice is worse than no notice: it invites a relaunch on
-    top of a live fleet, which is the one state this project must never reach. Ask Windows for the
-    command lines instead.
+    a live fleet, which is the one state this project must never reach. So ask for the command
+    lines themselves: Get-CimInstance on Windows, /proc on Linux, which is the same three fields.
     """
     out = sh("powershell", "-NoProfile", "-Command",
              "Get-CimInstance Win32_Process | ForEach-Object "
-             "{ \"$($_.ProcessId)|$($_.ParentProcessId)|$($_.CommandLine)\" }")
+             "{ \"$($_.ProcessId)|$($_.ParentProcessId)|$($_.CommandLine)\" }") \
+        if os.name == "nt" else _proc_table()
     if not out:
         return -1, -1                            # unknown, not zero -- never claim a false death
 

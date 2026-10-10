@@ -21,22 +21,33 @@ esac
 # The scratchpad is the directory this script lives in. It used to be an absolute path under %TEMP%,
 # which Windows cleanup deleted whole on 2026-08-24, taking the pipeline with it.
 KIT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && { pwd -W 2>/dev/null || pwd; })"
-SP="$(python "$KIT/kitpaths.py" state)"
+# The interpreter this kit is running under. A bare `python` is python3 under Git Bash on
+# Windows and does not exist at all on a Debian that keeps its packages in a virtualenv, so
+# every call below asks the kit which interpreter to use instead of assuming one.
+PY="${DQIX_PYTHON:-$(python3 "$KIT/kitpaths.py" py)}"
+# ninja and anything else installed beside it live in the same directory, and they are on
+# PATH only while the venv is ACTIVATED. Put them there for this script's children.
+export PATH="$(dirname "$PY"):$PATH"
+SP="$("$PY" "$KIT/kitpaths.py" state)"
+# Build logs land in the state directory, not /tmp: /tmp is world-readable and shared with every other
+# process on the host, and two waves writing the same fixed filename there clobber each other's
+# evidence. Same names as before, so the rest of the script is unchanged.
+SCRATCH="$SP/wlog"; mkdir -p "$SCRATCH"
 source "$KIT/wavelock.sh"
 if ! wave_lock_acquire 900; then
   echo "REFUSING: $LOCK held by another wave after 5h of waiting; not running unlocked"
   exit 3
 fi
 trap wave_lock_release EXIT
-export DQIX_MAIN_REPO="${DQIX_MAIN_REPO:-$(python "$KIT/kitpaths.py" repo)}"
-REPO="$(python "$KIT/integ_tree.py" sync)" || { echo "FATAL: no integration tree"; exit 2; }
+export DQIX_MAIN_REPO="${DQIX_MAIN_REPO:-$("$PY" "$KIT/kitpaths.py" repo)}"
+REPO="$("$PY" "$KIT/integ_tree.py" sync)" || { echo "FATAL: no integration tree"; exit 2; }
 export DQIX_REPO="$REPO"
 cd "$REPO" || { echo "FATAL: no repo"; exit 2; }
 if [ "$OV" = "main" ]; then
-  DL="config/usa/arm9/delinks.txt"; SRCDIR=$(python "$KIT/srcdir.py" main); TAGPRE="func_"; LBL="main"
+  DL="config/usa/arm9/delinks.txt"; SRCDIR=$("$PY" "$KIT/srcdir.py" main); TAGPRE="func_"; LBL="main"
 else
   DEC=$((10#$OV))
-  DL="config/usa/arm9/overlays/ov${OV}/delinks.txt"; SRCDIR=$(python "$KIT/srcdir.py" "$OV")
+  DL="config/usa/arm9/overlays/ov${OV}/delinks.txt"; SRCDIR=$("$PY" "$KIT/srcdir.py" "$OV")
   TAGPRE="func_ov${OV}_"; LBL="ov${OV}"
 fi
 Q="$SP/quarantine"; mkdir -p "$Q"
@@ -46,7 +57,7 @@ Q="$SP/quarantine"; mkdir -p "$Q"
 #    It stopped being safe the moment repairsweep began staging its own hits: 0208f588 -- skiplisted
 #    because it is byte-exact per function yet shifts the ARM9 link and reds the checksum -- was
 #    staged automatically on 2026-08-20 and would have entered the next main build unasked.
-python "$KIT/purge_skiplisted.py" 2>/dev/null | grep -E '^purge ' || true
+"$PY" "$KIT/purge_skiplisted.py" 2>/dev/null | grep -E '^purge ' || true
 # 1. purge pure scratch/junk (repo-root w*.cpp, any stray .o under src) — never part of build.
 find . -maxdepth 1 -name 'w*.cpp' -delete 2>/dev/null
 find src -name '*.o' -delete 2>/dev/null
@@ -82,7 +93,7 @@ if ! git ls-files --cached -z -- "$SRCDIR/" > "$_tracked_tmp"; then
 fi
 # Check the complete read and record terminator before publishing any membership.
 # mapfile alone accepts an unterminated last record and may treat a read error as EOF.
-if ! python -c 'import pathlib,sys; d=pathlib.Path(sys.argv[1]).read_bytes(); sys.exit(0 if not d or d.endswith(bytes([0])) else 1)' "$_tracked_tmp"; then
+if ! "$PY" -c 'import pathlib,sys; d=pathlib.Path(sys.argv[1]).read_bytes(); sys.exit(0 if not d or d.endswith(bytes([0])) else 1)' "$_tracked_tmp"; then
   rm -f "$_tracked_tmp"
   echo "FATAL: unreadable or truncated tracked paths; refusing duplicate quarantine"
   exit 6
@@ -130,7 +141,7 @@ BEFORE=$(grep -cE '^\s+\.(text|init) start:' "$DL")   # .init functions count to
 H0=$(git rev-parse --short HEAD)
 
 # integrate (ov_recover snapshots to hold_$LBL BEFORE any git touch, then bisect-commits)
-python -u "$KIT/ov_recover.py" "$OV" src 2>&1 | tee -a "$SP/wlog/rec_${OV}.log" | tail -3   # -u: progress visible live (classify+gate can run 10+ min)
+"$PY" -u "$KIT/ov_recover.py" "$OV" src 2>&1 | tee -a "$SP/wlog/rec_${OV}.log" | tail -3   # -u: progress visible live (classify+gate can run 10+ min)
 # A CRASHED INTEGRATOR IS NOT A QUIET WAVE. `set -o pipefail` cannot see this one: the exit status
 # of the pipeline is `tail`'s, which is 0 however badly the python died. On 2026-08-25 ov_recover
 # raised AttributeError three lines in, integrated nothing, and the wave signed off
@@ -157,35 +168,35 @@ fi
 # gate
 _compiler_args=()
 [ -n "${DQIX_PREINSTALLED_COMPILER:-}" ] && _compiler_args=(--compiler "$DQIX_PREINSTALLED_COMPILER")
-python tools/configure.py usa --no-extract "${_compiler_args[@]}" >/dev/null 2>&1
-if ! ninja check >/tmp/fw_check.log 2>&1; then
-  echo "RED: ninja check FAILED — NOT pushing. tail:"; tail -3 /tmp/fw_check.log
+"$PY" tools/configure.py usa --no-extract "${_compiler_args[@]}" >/dev/null 2>&1
+if ! ninja check >"$SCRATCH"/fw_check.log 2>&1; then
+  echo "RED: ninja check FAILED — NOT pushing. tail:"; tail -3 "$SCRATCH"/fw_check.log
   echo "held: $SP/hold_${LBL} (nothing lost)"; exit 4
 fi
 ninja rom >/dev/null 2>&1
 if ! ninja sha1 2>&1 | grep -q "OK"; then echo "RED: sha1 mismatch — NOT pushing"; exit 5; fi
 if [ "$(git rev-parse --short HEAD)" != "$H0" ]; then
-  python "$KIT/countfix.py" --since="$H0"
+  "$PY" "$KIT/countfix.py" --since="$H0"
   if [ $? -eq 3 ]; then
-    if ninja check >/tmp/fw_countfix.log 2>&1 && ninja sha1 2>&1 | grep -q "OK"; then
+    if ninja check >"$SCRATCH"/fw_countfix.log 2>&1 && ninja sha1 2>&1 | grep -q "OK"; then
       git add config/ && git commit -q -m "Align config with landed functions"
     else
-      python "$KIT/countfix.py" --restore
+      "$PY" "$KIT/countfix.py" --restore
       ninja check >/dev/null 2>&1
     fi
   fi
-  python "$KIT/regionsync.py"
+  "$PY" "$KIT/regionsync.py"
 fi
 
 # push only if we actually gained and HEAD moved
 H1=$(git rev-parse --short HEAD)
 if [ "$H1" != "$H0" ]; then
   PUSH="PUSH-FAILED"
-  python "$KIT/integ_tree.py" publish > /tmp/fw_push.log 2>&1
+  "$PY" "$KIT/integ_tree.py" publish > "$SCRATCH"/fw_push.log 2>&1
   case $? in
     0) PUSH="pushed" ;;
     2) PUSH="pushed-but-main-checkout-behind" ;;
-    *) cat /tmp/fw_push.log ;;
+    *) cat "$SCRATCH"/fw_push.log ;;
   esac
   # git push exits 0 on "Everything up-to-date", so compare refs
   if [ "$PUSH" != "PUSH-FAILED" ] && \
@@ -197,6 +208,6 @@ else
 fi
 
 rm -f build/usa/report.json; ninja report >/dev/null 2>&1
-COV=$(python -c "import json;m=json.load(open('build/usa/report.json'))['measures'];print('%d/%d = %.2f%%'%(m['matched_functions'],m['total_functions'],m['matched_functions_percent']))")
-python "$KIT/integ_tree.py" report
+COV=$("$PY" -c "import json;m=json.load(open('build/usa/report.json'))['measures'];print('%d/%d = %.2f%%'%(m['matched_functions'],m['total_functions'],m['matched_functions_percent']))")
+"$PY" "$KIT/integ_tree.py" report
 echo "OK ${LBL}: +${GAINED} delinked (${BEFORE}->${AFTER}), green, sha1 OK, ${PUSH}, cov ${COV}, held ${SP}/hold_${LBL}"

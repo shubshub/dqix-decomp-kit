@@ -5,8 +5,15 @@
 # the worker's last reported verdict just sits unbuilt. Found by accident: 2 of the first 35 examined
 # already gated MATCH.
 KIT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && { pwd -W 2>/dev/null || pwd; })"
-SP="$(python "$KIT/kitpaths.py" state)"
-REPO="$(python "$KIT/kitpaths.py" repo)"; cd "$REPO" || exit 2
+# The interpreter this kit is running under. A bare `python` is python3 under Git Bash on
+# Windows and does not exist at all on a Debian that keeps its packages in a virtualenv, so
+# every call below asks the kit which interpreter to use instead of assuming one.
+PY="${DQIX_PYTHON:-$(python3 "$KIT/kitpaths.py" py)}"
+# ninja and anything else installed beside it live in the same directory, and they are on
+# PATH only while the venv is ACTIVATED. Put them there for this script's children.
+export PATH="$(dirname "$PY"):$PATH"
+SP="$("$PY" "$KIT/kitpaths.py" state)"
+REPO="$("$PY" "$KIT/kitpaths.py" repo)"; cd "$REPO" || exit 2
 LOG="$SP/wlog/wgate_scratch.log"; : > "$LOG"
 hits=0; tried=0
 for f in "$SP"/w[0-9a-f]*.cpp; do
@@ -19,7 +26,7 @@ for f in "$SP"/w[0-9a-f]*.cpp; do
   fi
   [ -z "$m" ] && continue
   tried=$((tried+1))
-  if python "$KIT/wgate.py" "$m" "$a" "$f" 2>&1 | head -1 | grep -q '^MATCH'; then
+  if "$PY" "$KIT/wgate.py" "$m" "$a" "$f" 2>&1 | head -1 | grep -q '^MATCH'; then
     d="$SP/hold_main"; [ "$m" != "main" ] && d="$SP/hold_ov$m"
     mkdir -p "$d"; cp "$f" "$d/recovered_$a.cpp"; hits=$((hits+1))
     echo "MATCH $a ov$m -> $d" >> "$LOG"

@@ -11,14 +11,25 @@
 # is only tractable if you know which module to suspect. So this is a HYBRID, not a replacement --
 # best case one build instead of ten, worst case one wasted build then the old path unchanged.
 KIT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && { pwd -W 2>/dev/null || pwd; })"
-SP="$(python "$KIT/kitpaths.py" state)"
+# The interpreter this kit is running under. A bare `python` is python3 under Git Bash on
+# Windows and does not exist at all on a Debian that keeps its packages in a virtualenv, so
+# every call below asks the kit which interpreter to use instead of assuming one.
+PY="${DQIX_PYTHON:-$(python3 "$KIT/kitpaths.py" py)}"
+# ninja and anything else installed beside it live in the same directory, and they are on
+# PATH only while the venv is ACTIVATED. Put them there for this script's children.
+export PATH="$(dirname "$PY"):$PATH"
+SP="$("$PY" "$KIT/kitpaths.py" state)"
 LOG="$SP/wlog/integrate_fast.log"
+# Build logs land in the state directory, not /tmp: /tmp is world-readable and shared with every other
+# process on the host, and two runs writing the same fixed filename there clobber each other's
+# evidence. Same names as before, so the rest of the script is unchanged.
+SCRATCH="$SP/wlog"; mkdir -p "$SCRATCH"
 source "$KIT/wavelock.sh"
 if ! wave_lock_acquire 1; then
   echo "REFUSING: $LOCK held by another integration" | tee -a "$LOG"; exit 3
 fi
-export DQIX_MAIN_REPO="${DQIX_MAIN_REPO:-$(python "$KIT/kitpaths.py" repo)}"
-REPO="$(python "$KIT/integ_tree.py" sync)" || { wave_lock_release; echo "FATAL: no integration tree"; exit 2; }
+export DQIX_MAIN_REPO="${DQIX_MAIN_REPO:-$("$PY" "$KIT/kitpaths.py" repo)}"
+REPO="$("$PY" "$KIT/integ_tree.py" sync)" || { wave_lock_release; echo "FATAL: no integration tree"; exit 2; }
 export DQIX_REPO="$REPO"
 # ONE TERMINAL LINE ON EVERY EXIT PATH. There are nine `exit`s below and any of them can be the last
 # thing that happens. A watcher greping for one success word goes silent on the other eight, and that
@@ -91,7 +102,7 @@ ls "$SP"/staging/*/*.cpp >/dev/null 2>&1 || { echo "nothing left to batch" | tee
 # what wgate cannot see, since it masks reloc bytes. A single RELOCWRONG file (ov008/021894b8, whose
 # callee resolved to 0x205d1e0) cost a full combined build. Move anything not TRUSTED/RISKY aside
 # first; it is preserved, not deleted, and the per-module path can still try it later.
-python - "$SP" "$KIT" <<'PRE' >> "$LOG" 2>&1
+"$PY" - "$SP" "$KIT" <<'PRE' >> "$LOG" 2>&1
 import collections, glob, os, re, shutil, sys
 SP = sys.argv[1]
 KIT = sys.argv[2]
@@ -134,7 +145,7 @@ _mark=$(wc -l < "$LOG")
 # path did not, so a staged copy of an address already committed was re-wired on every pass and the
 # linker aborted with "Previously defined" -- two combined builds went RED that way on 2026-09-09,
 # each costing a full rollback to per-module. One shared implementation so the two cannot drift.
-python "$KIT/stagepurge.py" --apply >> "$LOG" 2>&1
+"$PY" "$KIT/stagepurge.py" --apply >> "$LOG" 2>&1
 ls "$SP"/staging/*/*.cpp >/dev/null 2>&1 || { echo "$(date '+%H:%M') everything staged was already landed" | tee -a "$LOG"; exit 0; }
 for d in "$SP"/staging/*/; do
   [ -d "$d" ] || continue
@@ -143,18 +154,18 @@ for d in "$SP"/staging/*/; do
   if [ "$mod" = "main" ]; then dst="$REPO/src/Combat/Main"; else dst="$REPO/src/Combat/Overlay_$((10#$mod))"; fi
   mkdir -p "$dst"; cp "$d"*.cpp "$dst"/ 2>/dev/null
   # Wire config only -- no build. That is what makes one global build possible.
-  python "$KIT/integrate.py" "$mod" >> "$LOG" 2>&1 && placed=$((placed+1))
+  "$PY" "$KIT/integrate.py" "$mod" >> "$LOG" 2>&1 && placed=$((placed+1))
 done
 # REGENERATE THE BUILD GRAPH. Wiring a source into delinks.txt tells the LINKER to expect
 # `<file>.o`, but ninja only knows how to produce objects listed in build.ninja -- so without this
 # the link fails with "Specified file build/usa/src/.../0200006a.o not found" and the combined build
 # looks like the functions are bad when nothing was ever compiled. finish_wave has always done this;
 # my fast path omitted it, which is what made a set of TRUSTED candidates appear unbuildable.
-python tools/configure.py usa --no-extract >> "$LOG" 2>&1
+"$PY" tools/configure.py usa --no-extract >> "$LOG" 2>&1
 echo "$(date '+%H:%M') wired $placed modules, configured, building once" >> "$LOG"
 
 green=0
-if ninja check >/tmp/if_check.log 2>&1 && ninja sha1 2>&1 | grep -q "OK"; then green=1; fi
+if ninja check >"$SCRATCH"/if_check.log 2>&1 && ninja sha1 2>&1 | grep -q "OK"; then green=1; fi
 
 landed=$(tail -n +$((_mark + 1)) "$LOG" | sed -n 's/^integrated \([0-9]*\);.*/\1/p' \
          | awk '{s += $1} END {print s + 0}')
@@ -168,9 +179,9 @@ if [ "$green" = "1" ]; then
     git clean -fdq src/ >> "$LOG" 2>&1
     exit 0
   fi
-  python "$KIT/countfix.py" >> "$LOG" 2>&1
-  if [ $? -eq 3 ] && ! { ninja check >/tmp/if_countfix.log 2>&1 && ninja sha1 2>&1 | grep -q "OK"; }; then
-    python "$KIT/countfix.py" --restore >> "$LOG" 2>&1
+  "$PY" "$KIT/countfix.py" >> "$LOG" 2>&1
+  if [ $? -eq 3 ] && ! { ninja check >"$SCRATCH"/if_countfix.log 2>&1 && ninja sha1 2>&1 | grep -q "OK"; }; then
+    "$PY" "$KIT/countfix.py" --restore >> "$LOG" 2>&1
     ninja check >/dev/null 2>&1
   fi
   git add -A config/ src/ >> "$LOG" 2>&1
@@ -184,9 +195,9 @@ if [ "$green" = "1" ]; then
   git commit -q \
       -m "Match $landed functions across $placed modules" >> "$LOG" 2>&1 || {
     echo "$(date '+%H:%M') COMMIT FAILED -- staging kept" | tee -a "$LOG"; exit 5; }
-  python "$KIT/regionsync.py" 2>&1 | tee -a "$LOG"
+  "$PY" "$KIT/regionsync.py" 2>&1 | tee -a "$LOG"
   _before=$(git rev-parse origin/decomp-matching 2>/dev/null)
-  python "$KIT/integ_tree.py" publish >> "$LOG" 2>&1
+  "$PY" "$KIT/integ_tree.py" publish >> "$LOG" 2>&1
   _after=$(git rev-parse origin/decomp-matching 2>/dev/null)
   if [ "$_before" = "$_after" ]; then
     echo "$(date '+%H:%M') GREEN: $landed functions, $placed modules, COMMITTED BUT NOT PUSHED" \
@@ -201,7 +212,7 @@ if [ "$green" = "1" ]; then
       a=$(grep -oE '// USA: func_(ov[0-9]+_)?[0-9a-fA-F]{8}' "$f" | head -1 \
           | grep -oE '[0-9a-fA-F]{8}$' | tr 'A-F' 'a-f')
       _m=$(basename "$(dirname "$f")"); _m=${_m#ov}
-      if [ -n "$a" ] && ! python "$KIT/delinked.py" "$a" "$_m"; then
+      if [ -n "$a" ] && ! "$PY" "$KIT/delinked.py" "$a" "$_m"; then
         _kept=$((_kept + 1)); continue
       fi
       rm -f "$f"
@@ -212,21 +223,21 @@ if [ "$green" = "1" ]; then
       | tee -a "$LOG"
   fi
   ninja report >/dev/null 2>&1 || echo "$(date '+%H:%M') WARN ninja report failed -- cov is stale" | tee -a "$LOG"
-  python "$KIT/integ_tree.py" report
-  python "$KIT/cov.py" | tee -a "$LOG"
+  "$PY" "$KIT/integ_tree.py" report
+  "$PY" "$KIT/cov.py" | tee -a "$LOG"
   exit 0
 fi
 
 # RED: undo everything this script did and hand over to the per-module path, which can cull.
 echo "$(date '+%H:%M') RED on the combined build -- rolling back, falling back to per-module" | tee -a "$LOG"
 # Keep the whole build log: `tail -3` twice reduced the cause to "Errors caused tool to abort",
-# and the next pass overwrote /tmp/if_check.log before anyone could read the line above it.
-cp /tmp/if_check.log "$SP/wlog/if_check_$(date '+%m%d_%H%M').log" 2>/dev/null
-grep -aE "expected to be at|error:|ERROR|undefined|not found|FAILED" /tmp/if_check.log | tail -12 >> "$LOG"
-tail -5 /tmp/if_check.log >> "$LOG"
+# and the next pass overwrote the check log before anyone could read the line above it.
+cp "$SCRATCH"/if_check.log "$SP/wlog/if_check_$(date '+%m%d_%H%M').log" 2>/dev/null
+grep -aE "expected to be at|error:|ERROR|undefined|not found|FAILED" "$SCRATCH"/if_check.log | tail -12 >> "$LOG"
+tail -5 "$SCRATCH"/if_check.log >> "$LOG"
 _round=${INTEGRATE_FAST_ROUND:-0}
 _cul=1
-[ "$_round" -lt 3 ] && { python "$KIT/culprits.py" /tmp/if_check.log --cull >> "$LOG" 2>&1; _cul=$?; }
+[ "$_round" -lt 3 ] && { "$PY" "$KIT/culprits.py" "$SCRATCH"/if_check.log --cull >> "$LOG" 2>&1; _cul=$?; }
 if [ "$_cul" -eq 0 ] || [ "$_cul" -eq 2 ]; then
   git checkout -- config/ src/ >> "$LOG" 2>&1
   git clean -fdq src/ >> "$LOG" 2>&1

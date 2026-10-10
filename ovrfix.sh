@@ -11,8 +11,15 @@
 # The session must produce a source that matches with NO override. It may not touch the override
 # table, and it may not change what the function does.
 KIT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && { pwd -W 2>/dev/null || pwd; })"
-SP="$(python "$KIT/kitpaths.py" state)"
-REPO="$(python "$KIT/kitpaths.py" repo)"
+# The interpreter this kit is running under. A bare `python` is python3 under Git Bash on
+# Windows and does not exist at all on a Debian that keeps its packages in a virtualenv, so
+# every call below asks the kit which interpreter to use instead of assuming one.
+PY="${DQIX_PYTHON:-$(python3 "$KIT/kitpaths.py" py)}"
+# ninja and anything else installed beside it live in the same directory, and they are on
+# PATH only while the venv is ACTIVATED. Put them there for this script's children.
+export PATH="$(dirname "$PY"):$PATH"
+SP="$("$PY" "$KIT/kitpaths.py" state)"
+REPO="$("$PY" "$KIT/kitpaths.py" repo)"
 MOD="$1"; ADDR="$2"; MODEL="${3:-sonnet}"
 [ -z "$ADDR" ] && { echo "usage: ovrfix.sh <mod> <addr> [model]"; exit 2; }
 
@@ -52,7 +59,7 @@ saying exactly which construct the two compilers disagree on." \
   --output-format json --model "$MODEL" --permission-mode bypassPermissions \
   >> "$LOG" 2>&1
 
-if WGATE_ALLOW_COMMITTED=1 python "$KIT/wgate.py" "$MOD" "$ADDR" "$OUT/$ADDR.cpp" 2>&1 | tail -1 | grep -q "^MATCH"; then
+if WGATE_ALLOW_COMMITTED=1 "$PY" "$KIT/wgate.py" "$MOD" "$ADDR" "$OUT/$ADDR.cpp" 2>&1 | tail -1 | grep -q "^MATCH"; then
   echo "$(date '+%H:%M') ovrfix $ADDR MATCHES at the default -- copy over $SRC and drop the override" >> "$LOG"
   echo "MATCH $ADDR"
 else

@@ -177,7 +177,7 @@ def scaffold(mod, addr):
         L.append("*/")
         L.append("")
     if os.environ.get("SCAFFOLD_ASM"):
-        dz = subprocess.run(["python", f"{SP}/lab/dz.py", "rom", mod, addr],
+        dz = subprocess.run([sys.executable, f"{SP}/lab/dz.py", "rom", mod, addr],
                             capture_output=True, text=True).stdout.strip().split('\n')
         L.append("/* TARGET DISASSEMBLY")
         for line in dz[1:]:

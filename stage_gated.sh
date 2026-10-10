@@ -15,14 +15,21 @@
 # feeds them one per wave, because their layout drift is cumulative.
 set -u
 KIT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && { pwd -W 2>/dev/null || pwd; })"
-SP="$(python "$KIT/kitpaths.py" state)"
+# The interpreter this kit is running under. A bare `python` is python3 under Git Bash on
+# Windows and does not exist at all on a Debian that keeps its packages in a virtualenv, so
+# every call below asks the kit which interpreter to use instead of assuming one.
+PY="${DQIX_PYTHON:-$(python3 "$KIT/kitpaths.py" py)}"
+# ninja and anything else installed beside it live in the same directory, and they are on
+# PATH only while the venv is ACTIVATED. Put them there for this script's children.
+export PATH="$(dirname "$PY"):$PATH"
+SP="$("$PY" "$KIT/kitpaths.py" state)"
 APPLY=0
 [ "${1:-}" = "--apply" ] && APPLY=1
 # resumable.py owns "is this already committed": it answers from the delink ranges, not from a
 # symbol name, so a renamed matched function still reads as committed. Scan ONCE -- calling it per
 # file would re-walk ~35k pool files 800 times.
 Q=$(mktemp); trap 'rm -f "$Q"' EXIT
-python "$KIT/resumable.py" --all 2>/dev/null | awk '{print $2}' | sort -u > "$Q"
+"$PY" "$KIT/resumable.py" --all 2>/dev/null | awk '{print $2}' | sort -u > "$Q"
 
 n=0; skip=0
 for f in "$SP"/gated/*/*.cpp; do

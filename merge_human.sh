@@ -41,8 +41,18 @@
 #   bash merge_human.sh <ref>        merge a ref the user named explicitly
 set -u
 KIT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && { pwd -W 2>/dev/null || pwd; })"
-SP="$(python "$KIT/kitpaths.py" state)"
-REPO="$(python "$KIT/kitpaths.py" repo)"
+# The interpreter this kit is running under. A bare `python` is python3 under Git Bash on
+# Windows and does not exist at all on a Debian that keeps its packages in a virtualenv, so
+# every call below asks the kit which interpreter to use instead of assuming one.
+PY="${DQIX_PYTHON:-$(python3 "$KIT/kitpaths.py" py)}"
+# ninja and anything else installed beside it live in the same directory, and they are on
+# PATH only while the venv is ACTIVATED. Put them there for this script's children.
+export PATH="$(dirname "$PY"):$PATH"
+SP="$("$PY" "$KIT/kitpaths.py" state)"
+REPO="$("$PY" "$KIT/kitpaths.py" repo)"
+# dsd ships under the platform's own name: `dsd.exe` on Windows, plain `dsd` on Linux. Ask the decomp
+# what it called it rather than guessing, so this call cannot fail quietly into an empty pipe.
+DSD="dsd"; [ -x "$REPO/$DSD.exe" ] && DSD="dsd.exe"
 UPSTREAM="DQIX/dqix-decomp"
 cd "$REPO" || exit 2
 mkdir -p "$SP/wlog"
@@ -54,7 +64,7 @@ if [ "$ARG" = "--check" ]; then
   git fetch -q upstream 2>/dev/null
   gh pr list --repo "$UPSTREAM" --state open \
      --json number,title,author,headRefOid --limit 50 \
-    | python -c '
+    | "$PY" -c '
 import json, subprocess, sys
 for pr in json.load(sys.stdin):
     sha = pr["headRefOid"]
@@ -84,7 +94,7 @@ PRE=$(git rev-parse HEAD)
 
 repool_pools() {
   echo "$PRE" > "$SP/wlog/last_merge_base.txt"
-  python "$KIT/pad/repool.py" --apply --rev "$PRE" > "$SP/wlog/repool_merge.log" 2>&1
+  "$PY" "$KIT/pad/repool.py" --apply --rev "$PRE" > "$SP/wlog/repool_merge.log" 2>&1
   echo "  pools: $(tail -1 "$SP/wlog/repool_merge.log")"
 }
 
@@ -108,7 +118,7 @@ done
 # range a human file now covers (left on disk they are orphans nothing builds).
 CFG=$(git diff --name-only --diff-filter=U)
 if [ -n "$CFG" ]; then
-  python "$KIT/union_merge.py" $CFG > "$SP/wlog/merge_human.log" 2>&1
+  "$PY" "$KIT/union_merge.py" $CFG > "$SP/wlog/merge_human.log" 2>&1
   grep -E "^UNION" "$SP/wlog/merge_human.log"
   grep "^DROP-FILE " "$SP/wlog/merge_human.log" | sed 's/^DROP-FILE //' | while read -r d; do
     [ -f "$d" ] && git rm -q --ignore-unmatch "$d" && echo "  removed superseded $d"
@@ -125,9 +135,9 @@ if [ -n "$CFG" ]; then
   fi
 fi
 
-python "$KIT/fix_includes.py"
-python "$KIT/rename_symbols.py" HEAD
-python tools/configure.py usa --no-extract > "$SP/wlog/merge_configure.log" 2>&1 || { echo "merge_human: configure FAILED"; exit 1; }
+"$PY" "$KIT/fix_includes.py"
+"$PY" "$KIT/rename_symbols.py" HEAD
+"$PY" tools/configure.py usa --no-extract > "$SP/wlog/merge_configure.log" 2>&1 || { echo "merge_human: configure FAILED"; exit 1; }
 # configure exits 0 on this, but delinks naming a file we do not have means a DROP-FILE
 # deleted a source we still build, or a record survived a rename. Both silently unmatch it.
 if grep -q "not on disk" "$SP/wlog/merge_configure.log"; then
@@ -141,7 +151,7 @@ for i in 1 2 3 4 5 6 7 8; do
     echo "merge_human: ninja check PASSES after $((i - 1)) repair rounds"
     break
   fi
-  python "$KIT/relink_undefined.py" "$SP/wlog/merge_check.log" > "$SP/wlog/relink_$i.log" 2>&1
+  "$PY" "$KIT/relink_undefined.py" "$SP/wlog/merge_check.log" > "$SP/wlog/relink_$i.log" 2>&1
   bash "$KIT/merge_fixups.sh" >/dev/null
   echo "  round $i: $(grep -c '^  [A-Za-z_]' "$SP/wlog/relink_$i.log") call sites repointed"
 
@@ -152,7 +162,7 @@ for i in 1 2 3 4 5 6 7 8; do
   # build deleted 24 real symbols the branch was adding.
   if ! grep -q "^FAILED.*arm9\.o" "$SP/wlog/merge_check.log" \
      && ! grep -qE "cpp:[0-9]+:" "$SP/wlog/merge_check.log"; then
-    ./dsd.exe check symbols --config-path config/usa/arm9/config.yaml \
+    ./"$DSD" check symbols --config-path config/usa/arm9/config.yaml \
         --elf-path build/usa/arm9.o --fail 2>&1 \
       | grep -oE "Symbol '[^']+'" | cut -d"'" -f2 | sort -u > "$SP/wlog/stale_symbols.txt"
     # A link that SUCCEEDS still reports the whole table when the elf is stale, and dropping it
@@ -175,7 +185,7 @@ if ninja check > "$SP/wlog/merge_check.log" 2>&1; then
   # Regenerate before reading it: report.json is a build artefact, so without this the line either
   # prints a stale number or tracebacks on a missing file and makes a successful merge look failed.
   rm -f build/usa/report.json; ninja report >/dev/null 2>&1
-  python -c "import json;m=json.load(open('build/usa/report.json'))['measures'];print('  coverage %.2f%% (%d matched)'%(m['matched_functions_percent'],m['matched_functions']))" 2>/dev/null \
+  "$PY" -c "import json;m=json.load(open('build/usa/report.json'))['measures'];print('  coverage %.2f%% (%d matched)'%(m['matched_functions_percent'],m['matched_functions']))" 2>/dev/null \
     || echo "  (coverage unavailable)"
 else
   echo "merge_human: ninja check STILL FAILS -- not committed. First error:"

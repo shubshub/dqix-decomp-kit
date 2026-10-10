@@ -39,7 +39,6 @@ import dataown
 SP = _kp.SP
 KIT = _kp.KIT
 REPO = os.environ.get("DQIX_REPO", _kp.REPO)
-CC = buildcfg.CC
 FLAGS = list(buildcfg.FLAGS)
 
 _spec = _ilu.spec_from_file_location("autorepair", f"{KIT}/autorepair.py")
@@ -89,7 +88,9 @@ except IOError:
 
 def cc_for(path):
     v = _CC_OVR.get(os.path.basename(str(path)))
-    return f"{REPO}/tools/mwccarm/{v}/mwccarm.exe" if v else CC
+    # through buildcfg.cc_path, so an override build is run by whatever runs the default one: the
+    # compiler binary itself on Windows, the runner around it (wibo/wine) everywhere else.
+    return buildcfg.cc_path(v)
 
 
 def _read_keep_nl(p):

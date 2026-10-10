@@ -24,6 +24,11 @@ OBJECT = re.compile(r"([\w$]+)\.o\b")
 CONFIG_LINE = re.compile(r"(config[\\/]\S+?\.txt):(\d+):")
 DRIFT = re.compile(r"expected to be at 0x([0-9a-f]+) but is at 0x([0-9a-f]+)")
 HEX8 = re.compile(r"(?:addr:0x|start:0x|_)0*([0-9a-fA-F]{7,8})\b")
+# The linker prefixes each of its own messages with its name. mwldarm keeps the .exe on every
+# platform (Linux runs it under the build's runner), but matching the stem with the suffix optional
+# costs nothing and stops a log whose prefix is spelled differently from being read as "no linker
+# output at all" -- which reported "no culprits" for a build that had named dozens.
+MWLD_PREFIX = re.compile(r"mwldarm(?:\.exe)?:\s*")
 
 
 CRASH = re.compile(r"\[code=(-\d+|\d{4,})\]|out of memory|not enough memory|Access violation", re.I)
@@ -74,12 +79,18 @@ def name(log, cands=None):
         blame(by_stem.get(os.path.splitext(os.path.basename(path.replace("\\", "/")))[0].lower()), "compile")
     linker = []
     for line in errors.splitlines():
-        if line.lstrip().startswith(('"', "C:", "c:")) and " -o " in line:
+        # An ECHOED compiler command line is not linker output. Recognise it by shape -- quoted, or
+        # opening with the path of a program -- rather than by one host's spelling of that path.
+        stripped = line.lstrip()
+        if " -o " in line and (stripped[:1] == '"' or stripped[:2] in ("./", "C:", "c:", "Z:", "z:")):
             continue
         for stem in OBJECT.findall(line):
             blame(by_stem.get(stem.lower()), "link")
-        if "mwldarm.exe:" in line:
-            linker.append(line.split("mwldarm.exe:", 1)[1].strip())
+        # The linker is mwldarm.exe on Windows and under the Linux runner too, but never trust a
+        # hardcoded suffix to find its own output: match the stem with the extension optional.
+        m = MWLD_PREFIX.search(line)
+        if m:
+            linker.append(line[m.end():].strip())
     for symbol in re.findall(r'"([^"]+)"', " ".join(linker)):
         for addr in re.findall(r"([0-9a-fA-F]{8})(?![0-9a-fA-F])", symbol):
             blame(by_addr.get(addr.lower()), "symbol")

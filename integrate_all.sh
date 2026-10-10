@@ -9,8 +9,15 @@
 # Each module costs a full rebuild, so this is slow by nature -- the point is to clear the backlog
 # completely before a measurement window, not to be quick.
 KIT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && { pwd -W 2>/dev/null || pwd; })"
-SP="$(python "$KIT/kitpaths.py" state)"
-REPO="$(python "$(cd "$(dirname "${BASH_SOURCE[0]}")" && { pwd -W 2>/dev/null || pwd; })/kitpaths.py" repo)"
+# The interpreter this kit is running under. A bare `python` is python3 under Git Bash on
+# Windows and does not exist at all on a Debian that keeps its packages in a virtualenv, so
+# every call below asks the kit which interpreter to use instead of assuming one.
+PY="${DQIX_PYTHON:-$(python3 "$KIT/kitpaths.py" py)}"
+# ninja and anything else installed beside it live in the same directory, and they are on
+# PATH only while the venv is ACTIVATED. Put them there for this script's children.
+export PATH="$(dirname "$PY"):$PATH"
+SP="$("$PY" "$KIT/kitpaths.py" state)"
+REPO="$("$PY" "$(cd "$(dirname "${BASH_SOURCE[0]}")" && { pwd -W 2>/dev/null || pwd; })/kitpaths.py" repo)"
 LOG="$SP/wlog/integrate_all.log"
 
 echo "=== integrate_all $(date '+%m-%d %H:%M') ===" >> "$LOG"
@@ -28,5 +35,5 @@ for d in $(ls -d "$SP"/staging/*/ 2>/dev/null \
 done
 
 echo "$(date '+%H:%M') === done ===" >> "$LOG"
-python "$KIT/cov.py" >> "$LOG" 2>&1
+"$PY" "$KIT/cov.py" >> "$LOG" 2>&1
 tail -3 "$LOG"

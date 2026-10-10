@@ -31,6 +31,18 @@ REPO_FILES = ["tools/configure.py", "config/usa/arm9/symbols.txt", "config/usa/a
 PORTABLE_SKILLS = ["dqix-hand-match", "dqix-status", "dqix-stop", "dqix-coordinate"]
 
 
+def _which(tool):
+    """Where `tool` is, counting the running interpreter's own directory.
+
+    A virtualenv's bin holds the ninja and capstone this kit was installed with, but its bin is on
+    PATH only while the venv is ACTIVATED -- and every kit script resolves its interpreter through
+    kitpaths, so it runs correctly whether or not anyone remembered to activate. Looking there too
+    is what makes that promise true here as well.
+    """
+    here = os.path.dirname(os.path.abspath(sys.executable))
+    return shutil.which(tool, path=os.pathsep.join([here, os.environ.get("PATH", "")]))
+
+
 def check_python():
     ok = True
     if sys.version_info < (3, 10):
@@ -44,11 +56,12 @@ def check_python():
         if importlib.util.find_spec(mod) is None:
             print(f"note  optional package not installed: {what}")
     for tool in ("git", "ninja", "bash"):
-        if shutil.which(tool) is None:
+        if _which(tool) is None:
             print(f"FAIL  {tool} not on PATH")
             ok = False
     if shutil.which("claude") is None:
         print("note  Claude Code CLI `claude` not on PATH; needed only for the worker fleet")
+    print(f"ok    interpreter {sys.executable}")
     return ok
 
 
@@ -66,8 +79,16 @@ def check_repo():
     except Exception as e:
         print(f"FAIL  buildcfg could not read the build configuration: {e}")
         return False
-    if not os.path.exists(buildcfg.CC):
-        print(f"FAIL  compiler {buildcfg.CC} is missing; run `ninja check` in the decomp once to fetch the toolchain")
+    if not os.path.exists(buildcfg.CC_TOOL):
+        print(f"FAIL  compiler {buildcfg.CC_TOOL} is missing; run `ninja check` in the decomp once to fetch the toolchain")
+        return False
+    # mwccarm is a Win32 PE everywhere, so off Windows something has to run it. The gate measures on
+    # the compiler the ROM was built with, so the runner has to be the build's own, not whatever
+    # happens to be installed: buildcfg takes it from the decomp's configure.py for that reason.
+    if os.name != "nt" and not buildcfg.RUNNER:
+        print(f"FAIL  no runner found for the Win32 toolchain (mwccarm.exe); the decomp builds on Linux "
+              f"with wibo, which ninja fetches to {REPO}/wibo. Run `ninja check` in the decomp once, "
+              f"or point $DQIX_WINE at one.")
         return False
     branch = subprocess.run(["git", "-C", REPO, "rev-parse", "--abbrev-ref", "HEAD"],
                             capture_output=True, text=True).stdout.strip()

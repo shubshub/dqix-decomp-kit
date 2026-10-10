@@ -5,13 +5,15 @@
 | component | tested | notes |
 |---|---|---|
 | OS | Windows 11 | fleet scripts list processes with PowerShell `Get-CimInstance`; Windows only |
+| OS | Debian 13 | everything but the fleet, `frida/` and `pad/renum/`; see [LINUX.md](LINUX.md) |
 | shell | Git Bash | the `.sh` scripts are bash; most take Windows paths from `pwd -W`, with a POSIX fallback |
 | Python | 3.10 | `kit_init.py` requires 3.10 or newer; the decomp README asks for 3.11 or newer |
-| `git`, `ninja`, `bash` | on PATH | `kit_init.py` checks for them |
+| `git`, `ninja`, `bash` | on PATH | `kit_init.py` checks for them; on Linux `ninja` may live in a virtualenv beside the interpreter, which the `.sh` scripts put back on `PATH` themselves |
 | Claude Code CLI `claude` | on PATH, logged in | needed for the fleet and the workflows; Codex and other agents read `AGENTS.md` and `.agents/skills/` instead |
 
-The per-function tools run `tools/mwccarm/<version>/mwccarm.exe` from the decomp directly. They are
-untested on anything but Windows.
+The per-function tools run `tools/mwccarm/<version>/mwccarm.exe` from the decomp directly. That is a
+Win32 binary on every platform: on Linux the build runs it under `wibo` and so does the kit, through
+the runner `buildcfg.py` reads out of the decomp's own `tools/configure.py`.
 
 On Windows, verify `python`, `ninja`, and `bash` in the process environment. Use Git's actual
 `usr/bin/bash.exe`, not the WSL `bash.exe` in System32 or Git's `bin/bash.exe` launcher.
@@ -117,6 +119,9 @@ All of these are under the state directory `$SP`, never under the checkout.
 | `DQIX_STATE` | `state.path`, else `../dqix-kit-state` | the state directory, for every script |
 | `DQIX_KIT` | the working directory | where skills and workflows find the checkout when the session runs elsewhere |
 | `CLAUDE_PROJECTS` | `~/.claude/projects` | where `evocap.py` and transcript readers find Claude Code sessions |
+| `DQIX_KIT_BRANCH` | `main` | the kit branch `kit_update.py` pulls |
+| `DQIX_PYTHON` | the interpreter running the kit | the `.sh` scripts resolve their interpreter with `kitpaths.py py`; set this to override |
+| `DQIX_WINE` | the decomp's own runner | the program that executes the Win32 toolchain here. Read out of the decomp's `configure.py` (`wibo`, or whatever `-w` was given); set it to diagnose |
 | `MWCC` | the build's version | `<ver>/<sub>` picks another mwccarm build for `wgate.py`, `wdiff.py` and `pad/` tools; diagnosis only |
 | `WGATE_FLAGS`, `WDIFF_FLAGS` | none | extra compiler flags for one gate or diff; diagnosis only |
 | `WGATE_ALLOW_PRAGMA` | unset | let `wgate.py` compile a source that carries a codegen pragma; diagnosis only |

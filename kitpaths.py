@@ -7,9 +7,12 @@
     REPO   the decomp checkout: $DQIX_REPO, else ../dqix-decomp beside the checkout.
 
     python kitpaths.py kit|state|repo     print one of them, for shell scripts
+    python kitpaths.py py                 the interpreter to run the kit with, for shell scripts
     python kitpaths.py behind             commits the published kit is ahead of this checkout
 """
 import os
+import shutil
+import subprocess
 import sys
 
 
@@ -54,6 +57,41 @@ def busy():
     return found
 
 
+def _has_kit_deps(interpreter):
+    """Whether `interpreter` can import what every gate needs."""
+    try:
+        return subprocess.run([interpreter, "-c", "import capstone, elftools"],
+                              capture_output=True, timeout=60).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def python():
+    """The interpreter to run this kit with.
+
+    $DQIX_PYTHON wins. Otherwise: one that already has the kit's dependencies -- the one running
+    this, or `python` from an activated virtualenv, or one beside the checkout -- and only if none
+    of those qualifies, whatever started us.
+
+    The `.sh` scripts used to say a bare `python`. Under Git Bash on Windows that is python3, so it
+    worked; on a Debian that keeps its packages in a virtualenv there is no `python` at all unless
+    someone remembered to activate it, and every script died on its first line. They ask here
+    instead -- and this function has to be able to answer while running under the SYSTEM python3,
+    because that is what they have to ask with. So kitpaths.py itself imports nothing but the
+    standard library.
+    """
+    env = os.environ.get("DQIX_PYTHON")
+    if env:
+        return env
+    if _has_kit_deps(sys.executable):
+        return sys.executable
+    for cand in (shutil.which("python"), os.path.join(KIT, ".venv", "bin", "python"),
+                 os.path.join(os.path.dirname(KIT), ".venv", "bin", "python")):
+        if cand and os.path.exists(cand) and _has_kit_deps(cand):
+            return os.path.abspath(cand)
+    return sys.executable
+
+
 def behind():
     """Commits the published kit is ahead of this checkout, fetched at most every FRESH_EVERY seconds."""
     import subprocess
@@ -95,6 +133,8 @@ if __name__ == "__main__":
     which = sys.argv[1] if len(sys.argv) > 1 else ""
     if which == "behind":
         print(behind())
+    elif which == "py":
+        print(python())
     elif which in ("kit", "state", "repo"):
         print({"kit": KIT, "state": SP, "repo": REPO}[which])
     else:
