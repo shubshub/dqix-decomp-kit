@@ -99,36 +99,18 @@ def verdicts(limit=12):
     return rows[:limit]
 
 
-def _proc_table():
-    """`pid|ppid|cmdline` for every live process, from /proc."""
-    rows = []
-    for entry in glob.glob("/proc/[0-9]*"):
-        try:
-            pid = os.path.basename(entry)
-            with open(f"{entry}/stat", encoding="utf-8", errors="replace") as fh:
-                ppid = fh.read().rsplit(") ", 1)[1].split()[1]
-            with open(f"{entry}/cmdline", "rb") as fh:
-                cmd = fh.read().replace(b"\0", b" ").decode("utf-8", "replace").strip()
-        except (OSError, IndexError):
-            continue                          # the process exited between the glob and the read
-        rows.append((pid, ppid, cmd))
-    return "\n".join("|".join(r) for r in rows)
-
-
 def fleet():
     """Count live drivers and workers BY COMMAND LINE.
 
     `ps -W` under Git Bash lists Windows processes without their arguments, so matching it against
     `pull_all.sh` finds nothing and this reported `drivers 0 workers 0 -- the run died` while a
     worker was mid-function. A false death notice is worse than no notice: it invites a relaunch on
-    a live fleet, which is the one state this project must never reach. So ask for the command
-    lines themselves: Get-CimInstance on Windows, /proc on Linux, which is the same three fields.
+    top of a live fleet, which is the one state this project must never reach. Ask Windows for the
+    command lines instead.
     """
-    out = sh("powershell", "-NoProfile", "-Command",
-             "Get-CimInstance Win32_Process | ForEach-Object "
-             "{ \"$($_.ProcessId)|$($_.ParentProcessId)|$($_.CommandLine)\" }") \
-        if os.name == "nt" else _proc_table()
-    if not out:
+    import procq
+    table = procq.snapshot()
+    if not table:
         return -1, -1                            # unknown, not zero -- never claim a false death
 
     # A PROCESS THAT MENTIONS THE SCRIPT IS NOT A PROCESS RUNNING IT, TWICE OVER:
@@ -137,11 +119,7 @@ def fleet():
     #     command line under MSYS, so it looks like a second driver.
     # Counting naively said FOUR drivers, then TWO, and acting on the two got a running repair sweep
     # killed as an imposter. Count only processes whose PARENT is not itself a match.
-    rows = []
-    for line in out.splitlines():
-        parts = line.split("|", 2)
-        if len(parts) == 3 and parts[0].strip().isdigit():
-            rows.append((parts[0].strip(), parts[1].strip(), parts[2]))
+    rows = [(str(r["pid"]), str(r["ppid"]), r["cmd"]) for r in table]
 
     def roots(name):
         hits = [r for r in rows if name in r[2] and " -c " not in r[2] and "ForEach-Object" not in r[2]]

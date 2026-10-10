@@ -11,7 +11,7 @@ Exit status is non-zero if any invariant fails, so run_all can surface it.
 import os as _kpos, sys as _kpsys
 _kpsys.path.insert(0, _kpos.path.dirname(_kpos.path.abspath(__file__)))
 import kitpaths as _kp
-import os, re, shutil, sys, glob
+import os, re, sys, glob
 
 SP = _kp.SP
 KIT = _kp.KIT
@@ -466,8 +466,7 @@ def _all_parse():
     # C:/ path -- every shell script then reports "does not parse". Use Git Bash explicitly, and if
     # no usable bash exists, check only the Python files rather than emit 18 false failures.
     shell = None
-    for cand in (shutil.which("bash"), r"C:\Program Files\Git\bin\bash.exe",
-                 r"C:\Program Files\Git\usr\bin\bash.exe", "bash"):
+    for cand in (r"C:\Program Files\Git\bin\bash.exe", r"C:\Program Files\Git\usr\bin\bash.exe", "bash"):
         try:
             probe = subprocess.run([cand, "-n", f"{KIT}/selfcheck.py"], capture_output=True, text=True)
             if "No such file or directory" not in (probe.stderr or ""):
@@ -1057,11 +1056,6 @@ def _lever_readers_agree():
        "kill-all that reports success and leaves the watchers up is worse than no kill-all")
 def _fullstop_sees_watchers():
     import subprocess, time
-    if os.name != "nt":
-        # fullstop.sh lists processes with PowerShell Get-CimInstance to catch the Windows
-        # claude.exe workers that survive a POSIX kill. There is no such worker here, so this
-        # asserts nothing about a host that has no fleet: SKIP, never FAIL.
-        return None
     log = f"{SP}/wlog/.selfcheck_decoy.log"
     open(log, "a").close()
     decoy = subprocess.Popen(
@@ -1081,7 +1075,12 @@ def _fullstop_sees_watchers():
     except subprocess.TimeoutExpired:
         return "fullstop --dry did not finish in 180s"
     finally:
-        decoy.kill()                 # taskkill is Windows; the decoy is our own child either way
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/PID", str(decoy.pid), "/T", "/F"],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        else:
+            decoy.kill()
+            decoy.wait()
         try:
             os.remove(log)
         except OSError:

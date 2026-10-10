@@ -32,7 +32,24 @@ def git(*args, cwd=None, check=True):
     return r.stdout.strip()
 
 
+def exclude(dst):
+    """Keep a link out of `git add -A`. A .gitignore entry like `tools/mwccarm/` matches a directory
+    but not a symlink, so ov_recover committed both links, and the fast-forward then replaced the
+    main checkout's real extract/usa and tools/mwccarm with self-referencing links."""
+    rel = "/" + os.path.relpath(dst, INTEG).replace("\\", "/")
+    path = os.path.join(REPO, git("rev-parse", "--git-common-dir"), "info", "exclude")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    try:
+        lines = open(path, encoding="utf-8").read().splitlines()
+    except OSError:
+        lines = []
+    if rel not in lines:
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(rel + "\n")
+
+
 def link_dir(src, dst):
+    exclude(dst)
     if os.path.lexists(dst) or not os.path.isdir(src):
         return
     if os.name == "nt":
@@ -45,13 +62,25 @@ def link_dir(src, dst):
 def create():
     git("worktree", "prune")
     git("worktree", "add", "--detach", INTEG, BRANCH)
-    tracked = set(git("ls-files", "extract").splitlines())
-    for name in os.listdir(f"{REPO}/extract"):
-        if os.path.isdir(f"{REPO}/extract/{name}") and not any(t.startswith(f"extract/{name}/") for t in tracked):
-            link_dir(f"{REPO}/extract/{name}", f"{INTEG}/extract/{name}")
     for name in ("arm7_bios.bin",):
         if os.path.isfile(f"{REPO}/{name}") and not os.path.exists(f"{INTEG}/{name}"):
             shutil.copy2(f"{REPO}/{name}", f"{INTEG}/{name}")
+
+
+def link_tools():
+    """The untracked toolchain the decomp's build downloaded. ov_recover compiles before this tree
+    has ever been built, so a fresh tree without them fails on a missing mwccarm."""
+    tracked = set(git("ls-files", "extract").splitlines())
+    for name in os.listdir(f"{REPO}/extract"):
+        if os.path.isdir(f"{REPO}/extract/{name}") and not os.path.islink(f"{REPO}/extract/{name}") \
+                and not any(t.startswith(f"extract/{name}/") for t in tracked):
+            link_dir(f"{REPO}/extract/{name}", f"{INTEG}/extract/{name}")
+    link_dir(f"{REPO}/tools/mwccarm", f"{INTEG}/tools/mwccarm")
+    for name in ("wibo", "dsd", "dsd.exe", "objdiff-cli", "objdiff-cli.exe"):
+        src, dst = f"{REPO}/{name}", f"{INTEG}/{name}"
+        exclude(dst)
+        if os.path.isfile(src) and not os.path.lexists(dst):
+            shutil.copy2(src, dst) if os.name == "nt" else os.symlink(src, dst)
 
 
 def sync():
@@ -59,6 +88,7 @@ def sync():
         return INTEG
     if not os.path.exists(f"{INTEG}/.git"):
         create()
+    link_tools()
     tip, head = git("rev-parse", BRANCH), git("rev-parse", "HEAD", cwd=INTEG)
     if not LOCAL and subprocess.run(["git", "-C", REPO, "fetch", "-q", "origin", BRANCH],
                                     capture_output=True).returncode == 0:

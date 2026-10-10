@@ -21,8 +21,15 @@
 # NEVER touches interactive `claude.exe` sessions -- a worker is identified by ` -p ` on its command
 # line. The operator has unrelated Claude sessions open.
 KIT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && { pwd -W 2>/dev/null || pwd; })"
-SP="$(python "$KIT/kitpaths.py" state)"
-REPO="$(python "$KIT/kitpaths.py" repo)"
+# The interpreter this kit is running under. A bare `python` is python3 under Git Bash on
+# Windows and does not exist at all on a Debian that keeps its packages in a virtualenv, so
+# every call below asks the kit which interpreter to use instead of assuming one.
+PY="${DQIX_PYTHON:-$(python3 "$KIT/kitpaths.py" py)}"
+# ninja and anything else installed beside it live in the same directory, and they are on
+# PATH only while the venv is ACTIVATED. Put them there for this script's children.
+export PATH="$(dirname "$PY"):$PATH"
+SP="$("$PY" "$KIT/kitpaths.py" state)"
+REPO="$("$PY" "$KIT/kitpaths.py" repo)"
 MODE="${1:-soft}"
 DRY=0
 [ "$MODE" = "--dry" ] && DRY=1
@@ -38,7 +45,7 @@ SPENDERS='supervise\.sh|run_all\.sh|run_module\.sh|run_overlay\.sh|run_main\.sh|
 # running" with both alive. 67 of the ~100 scripts in $SP were outside every tier. A path match
 # cannot go stale.
 # A path match still misses a job started from INSIDE $SP with a bare relative name: four
-# `python -u repairsweep.py` drivers survived a --hard stop on 2026-09-05, immediately respawned
+# `"$PY" -u repairsweep.py` drivers survived a --hard stop on 2026-09-05, immediately respawned
 # their colorsweep children, and the kill line reported success. So match the script BASENAMES too,
 # read off disk for the same reason the path match exists -- a list read at run time cannot go stale.
 _cpunames=$(ls "$KIT"/*.py "$KIT"/*.sh 2>/dev/null | xargs -n1 basename 2>/dev/null \
@@ -69,30 +76,18 @@ NOTCPU="$SPENDERS|$WATCHERS"
 # powershell process running the query matched itself and became its own first casualty.
 EXCL='shell-snapshots|Win32_Process|fullstop\.sh'
 
+PQ() { "$PY" "$KIT/procq.py" "$@" 2>/dev/null | tr -d '\r'; }
+
 ps_list() {   # $1 = regex over the command line; $2 = extra regex to EXCLUDE (optional)
-  powershell.exe -NoProfile -Command "
-    Get-CimInstance Win32_Process | Where-Object { \$_.CommandLine -match '$1' -and
-      \$_.CommandLine -notmatch '${2:-__never__}' -and
-      \$_.CommandLine -notmatch '$EXCL' } | ForEach-Object {
-      \$m = [int]((Get-Date) - \$_.CreationDate).TotalMinutes
-      \$c = \$_.CommandLine; if (\$c.Length -gt 110) { \$c = \$c.Substring(0,110) }
-      '{0}@@@{1}@@@{2}' -f \$_.ProcessId, \$m, \$c }" 2>/dev/null | tr -d '\r' | sed '/^$/d'
+  PQ --list --match "$1" --notmatch "${2:-__never__}" --notmatch "$EXCL"
 }
 
 kill_spenders() {   # one pass: workers AND everything that launches them
-  powershell.exe -NoProfile -Command "
-    \$p = @(Get-CimInstance Win32_Process | Where-Object { \$_.CommandLine -notmatch '$EXCL' -and (
-      (\$_.Name -eq 'claude.exe' -and \$_.CommandLine -match '\s-p\s.*DQIX') -or
-      (\$_.CommandLine -match '$SPENDERS')) })
-    foreach (\$x in \$p) { try { Stop-Process -Id \$x.ProcessId -Force -ErrorAction Stop } catch {} }
-    \$p.Count" 2>/dev/null | tr -d '\r\n '
+  PQ --kill --worker '\s-p\s.*DQIX' --match "$SPENDERS" --notmatch "$EXCL"
 }
 
 count_workers() {
-  powershell.exe -NoProfile -Command "
-    @(Get-CimInstance Win32_Process | Where-Object { \$_.CommandLine -notmatch '$EXCL' -and (
-      (\$_.Name -eq 'claude.exe' -and \$_.CommandLine -match '\s-p\s.*DQIX') -or
-      (\$_.CommandLine -match '$SPENDERS')) }).Count" 2>/dev/null | tr -d '\r\n '
+  PQ --count --worker '\s-p\s.*DQIX' --match "$SPENDERS" --notmatch "$EXCL"
 }
 
 # A Monitor's `cd` runs in the wrapper bash, so its tail/grep children carry no path of their own.
@@ -103,47 +98,18 @@ WATCHKIDS='tail[^ ]* -f|--line-buffered'
 # protects the caller's own chain exactly, so the watcher tier does not need the text guard.
 EXCLW='Win32_Process|fullstop\.sh'
 
-WATCH_FILTER="\$all = Get-CimInstance Win32_Process
-    \$byid = @{}; foreach (\$q in \$all) { \$byid[[int]\$q.ProcessId] = \$q }
-    \$self = @{}; \$self[\$PID] = 1; \$c = \$PID
-    for (\$i = 0; \$i -lt 12; \$i++) {
-      if (-not \$byid.ContainsKey(\$c)) { break }
-      \$self[\$c] = 1; \$c = [int]\$byid[\$c].ParentProcessId }
-    \$w = @(\$all | Where-Object {
-      \$x = \$_; \$ok = \$false
-      if (-not \$self.ContainsKey([int]\$x.ProcessId)) {
-        if (\$x.CommandLine -match '$WATCHERS' -and \$x.CommandLine -notmatch '$EXCLW') { \$ok = \$true }
-        if (\$x.Name -in @('tail.exe','grep.exe','bash.exe','sh.exe')) {
-          \$p = \$x; \$sawTail = \$false; \$sawOurs = \$false
-          for (\$i = 0; \$i -lt 8; \$i++) {
-            if (\$p.CommandLine -match '$WATCHKIDS') { \$sawTail = \$true }
-            if (\$p.CommandLine -match 'wlog|dqix-sp|dqix-decomp') { \$sawOurs = \$true }
-            if (\$sawTail -and \$sawOurs) { \$ok = \$true; break }
-            \$pp = [int]\$p.ParentProcessId
-            if (-not \$byid.ContainsKey(\$pp)) {
-              if (\$sawTail) { \$ok = \$true }
-              break }
-            \$p = \$byid[\$pp] } }
-      }
-      \$ok })"
+WATCH=(--watchers "$WATCHERS" --exclw "$EXCLW" --kids "$WATCHKIDS" --ours 'wlog|dqix-sp|dqix-decomp')
 
 kill_watchers() {   # monitors, and the tail/grep children a Monitor leaves behind
-  powershell.exe -NoProfile -Command "$WATCH_FILTER
-    foreach (\$x in \$w) { try { Stop-Process -Id \$x.ProcessId -Force -ErrorAction Stop } catch {} }
-    \$w.Count" 2>/dev/null | tr -d '\r\n '
+  PQ --kill "${WATCH[@]}"
 }
 
 count_watchers() {
-  powershell.exe -NoProfile -Command "$WATCH_FILTER
-    \$w.Count" 2>/dev/null | tr -d '\r\n '
+  PQ --count "${WATCH[@]}"
 }
 
 list_watchers() {
-  powershell.exe -NoProfile -Command "$WATCH_FILTER
-    \$w | ForEach-Object {
-      \$m = [int]((Get-Date) - \$_.CreationDate).TotalMinutes
-      \$c = \$_.CommandLine; if (\$c.Length -gt 110) { \$c = \$c.Substring(0,110) }
-      '{0}@@@{1}@@@{2}' -f \$_.ProcessId, \$m, \$c }" 2>/dev/null | tr -d '\r' | sed '/^$/d'
+  PQ --list "${WATCH[@]}"
 }
 
 # TaskStop ends a Monitor task and leaves its bash/tail/grep running, so restarting a watch a few
@@ -172,7 +138,7 @@ fi
 
 echo
 echo "TIER 1 -- token spenders (immediate)"
-_found=$(ps_list "(claude\.exe.*\s-p\s.*DQIX)|$SPENDERS")
+_found=$(ps_list "(claude(\.exe)?\b.*\s-p\s.*DQIX)|$SPENDERS")
 if [ -z "$_found" ]; then
   echo "  none running"
 else
@@ -201,11 +167,7 @@ if [ -z "$_cpu" ]; then
 elif [ "$HARD" -eq 1 ] && [ "$DRY" -eq 0 ]; then
   echo "$_cpu" | awk -F'@@@' '{printf "  pid %-7s %3s min  %s\n", $1, $2, $3}'
   kill_cpu() {
-    powershell.exe -NoProfile -Command "
-      \$p = @(Get-CimInstance Win32_Process | Where-Object { \$_.CommandLine -match '$CPUJOBS' -and
-        \$_.CommandLine -notmatch '$NOTCPU' -and \$_.CommandLine -notmatch '$EXCL' })
-      foreach (\$x in \$p) { try { Stop-Process -Id \$x.ProcessId -Force -ErrorAction Stop } catch {} }
-      \$p.Count" 2>/dev/null | tr -d '\r\n '
+    PQ --kill --match "$CPUJOBS" --notmatch "$NOTCPU" --notmatch "$EXCL"
   }
   echo "  killed: $(kill_cpu)"
   for _i in 1 2; do

@@ -10,9 +10,9 @@ and lands matches through one serialized, gated path that commits to the decomp.
 
 ## Platform
 
-Tested on Windows 11, Git Bash, Python 3.10. The per-function tools are plain Python but run the
-decomp's `mwccarm.exe` directly; untested on any other system. The fleet scripts list processes with
-PowerShell `Get-CimInstance` and run only on Windows.
+Tested on Windows 11 (Git Bash, Python 3.10) and Ubuntu 24.04 (bash, Python 3.12). On Linux the
+compiler runs through the decomp's own `wibo` (fetched by its build) and processes are read from
+`/proc`; see [docs/SETUP.md](docs/SETUP.md#linux). The `frida/` tools stay Windows only.
 
 **Debian/Linux is supported for everything except the fleet** — the gate, the sweeps, the landing
 scripts and the docs all run there. `mwccarm.exe` is a Win32 binary everywhere, so the decomp builds

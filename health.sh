@@ -8,8 +8,15 @@
 # Two hours and several worker-hours of tokens, zero output, and the only alert was a 120-minute
 # "no commit" that fired after the damage. Every check below is sized to catch that in minutes.
 KIT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && { pwd -W 2>/dev/null || pwd; })"
-SP="$(python "$KIT/kitpaths.py" state)"
-REPO="$(python "$KIT/kitpaths.py" repo)"
+# The interpreter this kit is running under. A bare `python` is python3 under Git Bash on
+# Windows and does not exist at all on a Debian that keeps its packages in a virtualenv, so
+# every call below asks the kit which interpreter to use instead of assuming one.
+PY="${DQIX_PYTHON:-$(python3 "$KIT/kitpaths.py" py)}"
+# ninja and anything else installed beside it live in the same directory, and they are on
+# PATH only while the venv is ACTIVATED. Put them there for this script's children.
+export PATH="$(dirname "$PY"):$PATH"
+SP="$("$PY" "$KIT/kitpaths.py" state)"
+REPO="$("$PY" "$KIT/kitpaths.py" repo)"
 PROG="$SP/PROGRESS.log"
 STATE="$SP/wlog/health_state.txt"
 INTERVAL=${HEALTH_INTERVAL:-120}       # check every 2 min
@@ -33,13 +40,13 @@ mins_since() { echo $(( ( $(now) - $1 ) / 60 )); }
 # which is only written while the fleet runs -- so with the fleet stopped the monitor kept printing
 # a frozen 11622 for hours after commits had moved the real figure to 11654. A status line that
 # cannot change reads as proof that nothing is happening, which is the opposite of monitoring.
-cov_now() { python "$KIT/cov.py" 2>/dev/null || echo "(cov unavailable)"; }
+cov_now() { "$PY" "$KIT/cov.py" 2>/dev/null || echo "(cov unavailable)"; }
 commit_age_min() {
   local t; t=$(git -C "$REPO" log -1 --format=%ct 2>/dev/null)
   [ -z "$t" ] && { echo 0; return; }
   echo $(( ( $(now) - t ) / 60 ))
 }
-ps_count() { powershell.exe -NoProfile -Command "$1" 2>/dev/null | tr -d '\r\n '; }
+ps_count() { "$PY" "$KIT/procq.py" "$@" 2>/dev/null | tr -d '\r\n '; }
 # COMMITS ARRIVE AT THE FLEET'S PACE, so a fixed stall threshold is calibrated for one fleet size
 # only. At four slots 90m means something is wrong; at one slot it is a normal gap between landings
 # and fires every cycle until it stops being read.
@@ -63,10 +70,10 @@ while true; do
   # alerts are known to be wrong is one nobody reads, which is how a stray run_module survived a
   # whole session unnoticed. The reverse check replaces it: while stopped, a driver is the fault.
   if [ -f "$SP/FLEET_STOPPED" ]; then
-    n=$(ps_count "(Get-CimInstance Win32_Process | Where-Object { \$_.CommandLine -match 'run_all.sh|supervise.sh|run_module.sh' }).Count")
+    n=$(ps_count --count --match 'run_all.sh|supervise.sh|run_module.sh')
     [ -z "$n" ] && n=0
     [ "$n" -gt 0 ] 2>/dev/null && alerts="${alerts}ALERT stray: fleet marked STOPPED but $n driver(s) running"$'\n'
-    w=$(ps_count "@(Get-CimInstance Win32_Process | Where-Object { \$_.Name -eq 'claude.exe' -and \$_.CommandLine -match '\s-p\s.*DQIX' }).Count")
+    w=$(ps_count --count --worker '\s-p\s.*DQIX')
     [ -z "$w" ] && w=0
     [ "$w" -gt 0 ] 2>/dev/null && alerts="${alerts}ALERT stray: fleet marked STOPPED but $w headless worker(s) alive"$'\n'
     if [ -n "$alerts" ]; then printf '%s' "$alerts"; else
@@ -90,7 +97,7 @@ while true; do
   # is how a stray run_module survived a whole session unnoticed.
   # A LONE pull_worker IS A LEGITIMATE DISPATCH. Working one function at a time on a chosen address
   # skips pull_all entirely, and alerting on that fires every cycle while the work is healthy.
-  n=$(ps_count "(Get-CimInstance Win32_Process | Where-Object { \$_.CommandLine -match 'run_all.sh|supervise.sh|pull_all.sh|pull_worker.sh' }).Count")
+  n=$(ps_count --count --match 'run_all.sh|supervise.sh|pull_all.sh|pull_worker.sh')
   [ -z "$n" ] && n=0
   [ "$n" -lt 1 ] 2>/dev/null && alerts="${alerts}ALERT driver: nothing dispatching (no pull_all, supervise+run_all, or pull_worker)"$'\n'
 
@@ -109,11 +116,11 @@ while true; do
   # gating -- 08:25 to 08:46 with nothing written was ordinary work, not a hang. The only honest
   # liveness test is whether the process is still BURNING CPU, so compare its own consumed time
   # against the previous cycle; a hung session's total stops moving while a working one climbs.
-  old=$(ps_count "@(Get-CimInstance Win32_Process | Where-Object { \$_.Name -eq 'claude.exe' -and \$_.CommandLine -match '\s-p\s.*DQIX' -and \$_.CreationDate -lt (Get-Date).AddMinutes(-$WORKER_MAX_MIN) }).Count")
+  old=$(ps_count --count --worker '\s-p\s.*DQIX' --older "$WORKER_MAX_MIN")
   [ -z "$old" ] && old=0
   if [ "$old" -gt 0 ] 2>/dev/null; then
     _cpuf="$SP/wlog/health_worker_cpu.txt"
-    _cpu=$(ps_count "(Get-CimInstance Win32_Process | Where-Object { \$_.Name -eq 'claude.exe' -and \$_.CommandLine -match '\s-p\s.*DQIX' } | Measure-Object -Property UserModeTime -Sum).Sum")
+    _cpu=$(ps_count --cpu --worker '\s-p\s.*DQIX')
     _prev=$(cat "$_cpuf" 2>/dev/null)
     if [ -n "$_cpu" ] && [ "$_cpu" = "$_prev" ]; then
       alerts="${alerts}ALERT worker: $old headless worker(s) >${WORKER_MAX_MIN}m and burning no CPU since the last check -- hung"$'\n'
@@ -136,7 +143,7 @@ while true; do
   _crackf="$SP/wlog/.last_crack_alert"
   _cage=$(( $(now) - $(date -r "$_crackf" +%s 2>/dev/null || echo 0) ))
   if [ "$_cage" -ge "${CRACK_ALERT_EVERY:-21600}" ]; then
-    _crack=$(python "$KIT/blockercheck.py" 2>/dev/null | grep '^CRACK:')
+    _crack=$("$PY" "$KIT/blockercheck.py" 2>/dev/null | grep '^CRACK:')
     if [ -n "$_crack" ]; then
       : > "$_crackf"
       alerts="${alerts}$(printf '%s\n' "$_crack" | sed 's/^CRACK:/ALERT crack:/')"$'\n'
@@ -159,9 +166,9 @@ while true; do
   # zero workers -- was watched by nothing. Measured 2026-09-08: idle 13:26 to 14:59, discovered by
   # hand. The hold itself is CORRECT and must stay; it is the silence that is the bug.
   _idlef="$SP/wlog/.zero_workers_since"
-  _wn=$(ps_count "@(Get-CimInstance Win32_Process | Where-Object { \$_.Name -eq 'claude.exe' -and \$_.CommandLine -match '\s-p\s.*DQIX' }).Count")
+  _wn=$(ps_count --count --worker '\s-p\s.*DQIX')
   [ -z "$_wn" ] && _wn=0
-  _pw=$(ps_count "@(Get-CimInstance Win32_Process | Where-Object { \$_.CommandLine -match 'pull_work'+'er' }).Count")
+  _pw=$(ps_count --count --match 'pull_worker')
   [ -z "$_pw" ] && _pw=0
   if [ "$_wn" -gt 0 ] 2>/dev/null || [ "$_pw" -gt 0 ] 2>/dev/null; then
     rm -f "$_idlef"
@@ -199,7 +206,7 @@ while true; do
   # at 0-for-5 for $11 and the monitor said OK throughout. pullstat distinguishes the two failure
   # shapes that matter -- quitting early (something is missing) versus hitting the cap (the budget
   # truncated real work).
-  _po=$(python "$KIT/pullstat.py" --alerts 2>/dev/null)
+  _po=$("$PY" "$KIT/pullstat.py" --alerts 2>/dev/null)
   [ -n "$_po" ] && alerts="${alerts}${_po}"$'\n'
 
   # 7. Red gate.
@@ -237,7 +244,7 @@ while true; do
     printf '%s' "$alerts"
     last_ok=0
   elif [ $(( $(now) - last_ok )) -ge 1800 ]; then
-    w=$(ps_count "@(Get-CimInstance Win32_Process | Where-Object { \$_.Name -eq 'claude.exe' -and \$_.CommandLine -match '\s-p\s.*DQIX' }).Count")
+    w=$(ps_count --count --worker '\s-p\s.*DQIX')
     echo "OK $(date '+%H:%M') cov $(cov_now) · workers ${w:-0} · last commit ${stalled}m ago"
     # PERIODIC RESULT SUMMARY, not just alerts. Everything else here fires only when something is
     # WRONG, so a fleet running well produces silence -- which answers "is it broken?" but never
@@ -250,7 +257,7 @@ while true; do
     _last=$(cat "$SP/wlog/.last_summary" 2>/dev/null); _last=${_last:-0}
     if [ $(( $(now) - _last )) -ge "${SUMMARY_SECS:-1800}" ]; then
       echo "$(now)" > "$SP/wlog/.last_summary"
-      python "$KIT/pullstat.py" 2>/dev/null | sed 's/^/    /' | grep -vE '^\s*$'
+      "$PY" "$KIT/pullstat.py" 2>/dev/null | sed 's/^/    /' | grep -vE '^\s*$'
     fi
     last_ok=$(now)
   fi

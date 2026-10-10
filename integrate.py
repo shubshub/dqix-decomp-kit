@@ -89,7 +89,7 @@ except IOError:
 def cc_for(path):
     v = _CC_OVR.get(os.path.basename(str(path)))
     # through buildcfg.cc_path, so an override build is run by whatever runs the default one: the
-    # compiler binary itself on Windows, the runner around it (wibo/wine) everywhere else.
+    # .exe itself on Windows, the wrapper around it (wibo/wine) everywhere else.
     return buildcfg.cc_path(v)
 
 

@@ -4,21 +4,36 @@
 
 | component | tested | notes |
 |---|---|---|
-| OS | Windows 11 | fleet scripts list processes with PowerShell `Get-CimInstance`; Windows only |
-| OS | Debian 13 | everything but the fleet, `frida/` and `pad/renum/`; see [LINUX.md](LINUX.md) |
-| shell | Git Bash | the `.sh` scripts are bash; most take Windows paths from `pwd -W`, with a POSIX fallback |
-| Python | 3.10 | `kit_init.py` requires 3.10 or newer; the decomp README asks for 3.11 or newer |
-| `git`, `ninja`, `bash` | on PATH | `kit_init.py` checks for them; on Linux `ninja` may live in a virtualenv beside the interpreter, which the `.sh` scripts put back on `PATH` themselves |
+| OS | Windows 11, Ubuntu 24.04, Debian 13 | `procq.py` reads processes through one CIM query on Windows, `/proc` on Linux |
+| OS (limits) | Windows only | `frida/` and `pad/renum/` hook a native Windows `mwccarm.exe` in its own process |
+| shell | Git Bash, bash | the `.sh` scripts are bash; most take Windows paths from `pwd -W`, with a POSIX fallback |
+| Python | 3.10, 3.12, 3.13 | `kit_init.py` requires 3.10 or newer; the decomp README asks for 3.11 or newer |
+| `git`, `ninja`, `bash` | on PATH | `kit_init.py` checks them, counting the running interpreter's own directory — on Linux `ninja` usually lives in a virtualenv |
 | Claude Code CLI `claude` | on PATH, logged in | needed for the fleet and the workflows; Codex and other agents read `AGENTS.md` and `.agents/skills/` instead |
 
 The per-function tools run `tools/mwccarm/<version>/mwccarm.exe` from the decomp directly. That is a
-Win32 binary on every platform: on Linux the build runs it under `wibo` and so does the kit, through
-the runner `buildcfg.py` reads out of the decomp's own `tools/configure.py`.
+Win32 binary on every platform: on Linux `buildcfg.py` runs it through the decomp's own `wibo` — the
+`-w` loader from its `tools/configure.py` — and writes a two-line wrapper per tool under `$SP/wibo/`,
+handing that path out as `CC`/`AS` so every caller keeps building `[CC] + FLAGS` unchanged. `wibo` and
+the compiler are fetched by the decomp's first `ninja` build.
 
 On Windows, verify `python`, `ninja`, and `bash` in the process environment. Use Git's actual
 `usr/bin/bash.exe`, not the WSL `bash.exe` in System32 or Git's `bin/bash.exe` launcher.
 Killing the launcher after a subprocess timeout may leave its child holding output pipes
 open. Put Git's `usr/bin` before other Bash providers on PATH; keep these settings process-local.
+
+### Linux
+
+- The scripts used to call `python`, which Debian and Ubuntu do not provide. They now ask
+  `kitpaths.py py` for the interpreter that has the kit's dependencies and put its directory on
+  `PATH`, so a virtualenv works activated or not:
+
+      python3 -m venv --without-pip .venv && curl -sS https://bootstrap.pypa.io/get-pip.py | .venv/bin/python
+      .venv/bin/python -m pip install capstone pyelftools ninja requests
+
+  `$DQIX_PYTHON` overrides the choice.
+- [LINUX.md](LINUX.md) is the whole Linux walkthrough: layout, build targets, what still needs
+  Windows, and the two tool names that change with the platform (`dsd`, `objdiff-cli`).
 
 ## Layout on disk
 

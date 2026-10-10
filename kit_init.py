@@ -79,8 +79,10 @@ def check_repo():
     except Exception as e:
         print(f"FAIL  buildcfg could not read the build configuration: {e}")
         return False
-    if not os.path.exists(buildcfg.CC_TOOL):
-        print(f"FAIL  compiler {buildcfg.CC_TOOL} is missing; run `ninja check` in the decomp once to fetch the toolchain")
+    # buildcfg.native() hands back the .exe itself when the toolchain is not there, so this
+    # still reports an unfetched compiler rather than a missing wrapper.
+    if not os.path.exists(buildcfg.CC):
+        print(f"FAIL  compiler {buildcfg.CC} is missing; run `ninja check` in the decomp once to fetch the toolchain")
         return False
     # mwccarm is a Win32 PE everywhere, so off Windows something has to run it. The gate measures on
     # the compiler the ROM was built with, so the runner has to be the build's own, not whatever

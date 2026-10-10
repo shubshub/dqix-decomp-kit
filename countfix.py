@@ -34,11 +34,10 @@ def function_locations():
 def diff_unit(unit):
     if os.path.exists(TMP):
         os.remove(TMP)
-    # objdiff ships under the platform's own name: objdiff-cli.exe on Windows, plain objdiff-cli on
-    # Linux. Naming the wrong one raised FileNotFoundError, which both landing scripts swallow
-    # (>> "$LOG" 2>&1), so countfix quietly stopped correcting counts and the build carried on.
-    cli = "objdiff-cli.exe" if os.name == "nt" else "objdiff-cli"
-    subprocess.run([f"{REPO}/{cli}", "diff", "-p", REPO, "-u", unit, "-o", TMP, "--format", "json"],
+    # objdiff ships under the platform's own name. Naming the wrong one raised FileNotFoundError,
+    # which both landing scripts discard (>> "$LOG" 2>&1) -- so countfix quietly stopped correcting
+    # counts, reported nothing, and the build carried on.
+    subprocess.run([f"{REPO}/objdiff-cli{'.exe' if os.name == 'nt' else ''}", "diff", "-p", REPO, "-u", unit, "-o", TMP, "--format", "json"],
                    capture_output=True, cwd=REPO)
     if not os.path.exists(TMP):
         return []

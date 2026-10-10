@@ -97,6 +97,9 @@ emits) · `fixundef.py` resolve callee names · `ovidrelocs.py [--apply]` give e
 `psq.sh [--count|--list|--kind work|job]` how many DQIX jobs are ALIVE — excludes the querying
 process and its own ancestors by PID, because an ad-hoc `Get-CimInstance ... -match 'finish_wave'`
 matches its own command line and reports a busy machine when nothing is running ·
+`procq.py [--match|--worker|--watchers ...] [--count|--list|--kill|--cpu]` the process table on
+Windows (one CIM query) or Linux (`/proc`), filtered; every fleet script's process query goes
+through it ·
 `stagepurge.py [--apply]` drop staged sources whose address is already landed (a live delink range
 covers it AND a tracked `src/` file defines it) — the ONE implementation of that test, called by
 `integrate_fast.sh` before it copies anything into `src/` ·
