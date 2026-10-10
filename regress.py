@@ -2170,6 +2170,23 @@ def _external_gate_state():
     if 'os.replace(_tmp,' not in gate or 'ELFFile(io.BytesIO(_fh.read()))' not in diff:
         return "snapshot publication is not atomic or differ retains an open object handle"
 
+@check("repool leaves a member already spelled as the renamed nested symbol",
+       "021eefd0 declared GetGrottoStruct inside struct GameState; repool pasted "
+       "_ZN9GameState15GetGrottoStructEv over the member and the call, and the source stopped compiling")
+def _repool_member():
+    R = load("pad/repool")
+    spell = {"GetGrottoStruct": "_ZN9GameState15GetGrottoStructEv", "Foo": "_Z3Foov"}
+    member = ("struct G;\nstruct GameState {\n    static GameState* GetInstance();\n"
+              "    G* GetGrottoStruct();\n};\n\nvoid f() { GameState::GetInstance()->GetGrottoStruct(); }\n")
+    new, _what = R.rewrite(member, True, spell, {}, set(), {}, {})
+    if new != member:
+        return "rewrote a member declaration and its call"
+    free = "int Foo();\n\nvoid f() { Foo(); }\n"
+    new, _what = R.rewrite(free, True, spell, {}, set(), {}, {})
+    if not new or "_Z3Foov" not in new:
+        return "no longer rewrites a renamed free function"
+
+
 if __name__ == "__main__":
     slow = "--slow" in sys.argv
     nbad = run_functional() if slow else 0
