@@ -99,6 +99,7 @@ explains every step.
 - [docs/NATIVE_AGENTS.md](docs/NATIVE_AGENTS.md) — native-agent coordination and bounded crack/evolve procedures for hosts such as Codex
 - [docs/LESSONS.md](docs/LESSONS.md) — compiler facts and pipeline rules learned the hard way
 - [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) — sending matches and tool fixes back
+- [docs/SWARM-IDENTITY.md](docs/SWARM-IDENTITY.md) — claim a name before reserving, when more than one agent shares the GitHub account
 
 ## AI agents
 
