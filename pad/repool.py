@@ -46,6 +46,31 @@ def plain(sym):
     return None if sym.startswith("_Z") else sym
 
 
+def nested(sym):
+    if not sym.startswith("_ZN"):
+        return None
+    i, parts = 4 if sym[3:4] == "K" else 3, []
+    while i < len(sym) and sym[i].isdigit():
+        n = re.match(r"\d+", sym[i:]).group()
+        i += len(n)
+        parts.append(sym[i:i + int(n)])
+        i += int(n)
+    return parts if len(parts) >= 2 and sym[i:i + 1] == "E" else None
+
+
+def declares_member(text, cls, name):
+    m = re.search(r"\b(?:struct|class)\s+%s\b[^;{]*\{" % re.escape(cls), text)
+    if not m:
+        return False
+    depth, k = 0, m.end() - 1
+    while k < len(text):
+        depth += (text[k] == "{") - (text[k] == "}")
+        k += 1
+        if depth == 0:
+            break
+    return bool(re.search(r"\b%s\s*\(" % re.escape(name), text[m.end():k]))
+
+
 def headers(rev):
     return {p: git("show", "%s:%s" % (rev, p))
             for p in git("ls-tree", "-r", "--name-only", rev, "include").split()
@@ -155,6 +180,10 @@ def rewrite(text, cxx, spell, protos, gone, moved, defs):
     defined = {w for w in set(words.findall(text))
                if re.search(r"^[ \t]*[A-Za-z_][\w \t\*&:<>]*?[ \t\*&]%s\s*\([^;{}()]*\)\s*(?:const\s*)?\{"
                             % re.escape(w), text, re.M)}
+    for w in set(words.findall(text)):
+        parts = nested(spell[w])
+        if parts and parts[-1] == w and declares_member(text, parts[-2], w):
+            defined.add(w)
     used = {}
     lines = text.split("\n")
     for k, ln in enumerate(lines):
