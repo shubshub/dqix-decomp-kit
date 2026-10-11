@@ -283,7 +283,10 @@ Propagation cannot fold `&g` through the increment; a later pass cancels `++` ag
 arithmetic emitted is unchanged and only the address formation moves. Two ZoneFeatures functions
 that previously matched only under a file-wide `off` match byte-exact at the `-O2` default this way.
 `colorsweep` r27 generates both this and the `instance--` / `(instance + 1)` mirror, so run the sweep
-before reaching for the pragma. The same trick on an integer (`v++` … `v - 1`) does NOT survive —
+before reaching for the pragma. When the base's two adds must stay separate, the lever is the
+pointer formed one element past the object, `l = (T *)(base + off) + 1;`. Which read then keeps the
+add differs per function, so try both: `l--; l->f` (`0215d864`, where `(l - 1)->f` folds `#0xc00`)
+and `(l - 1)->f` (`02164d14`). The same trick on an integer (`v++` … `v - 1`) does NOT survive —
 that folds at propagation time; it is pointer arithmetic that outlives the pass.
 
 Caching a field in a local is the same lever pointed the other way: re-reading `p->b` at its second
