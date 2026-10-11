@@ -1024,6 +1024,18 @@ def _levercheck_boards():
     return None
 
 
+@check("levercheck's default doc list keeps a checkout path that contains ':'",
+       "the two worker_src paths were joined with os.pathsep and split again, so a colon in the "
+       "checkout path made every core.md citation invisible and claim.py served nothing")
+def _levercheck_colon_path():
+    docs = load("levercheck").doc_paths("/tmp/Dragon Quest IX: Sentinels/kit")
+    core = os.path.join("/tmp/Dragon Quest IX: Sentinels/kit", "worker_src", "core.md")
+    dead = os.path.join("/tmp/Dragon Quest IX: Sentinels/kit", "worker_src", "deadends.md")
+    if docs != [core, dead]:
+        return "doc_paths split the checkout path: %r" % (docs,)
+    return None
+
+
 @check("r28 rewrites a field read to the literal its equality arm compared against",
        "020db3f4 sits 6 bytes and one wrong mnemonic out because `field + 15` re-loads the field "
        "instead of reusing the register the compare already materialised the literal in. The "
