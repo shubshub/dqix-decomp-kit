@@ -773,6 +773,9 @@ is register NUMBERS around a byte value, retype it before touching anything else
 - SIGNEDNESS PICKS THE MNEMONIC. A struct field typed `int` rather than `unsigned int` makes
   `f >> 2` emit `asr` not `lsr`, and `f >= 0x38` emit `blt`/`bge` not `blo`/`bhs`. When the only
   wrong mnemonics are shift or compare flavours, retype the FIELD, not the local (`020c0a40`).
+- an `unsigned char` compared `> 0` folds to `!= 0` (`movne`/`bne`). A `movgt`/`bgt` right after
+  the `ldrb` means the compare was signed: write `(int)p->field > 0` and keep the field
+  `unsigned char` (`021c5c5c`).
 - Keep a packed value in an `int` local so only the genuinely narrow call site pays for the
   truncation; typing the local `unsigned short` emits `lsl`/`lsr #0x10` at every use (`020307d0`).
 - three separate `and rX,sl,#0xff` for ONE integer argument are per-call implicit conversions to an
