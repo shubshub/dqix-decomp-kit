@@ -773,6 +773,12 @@ is register NUMBERS around a byte value, retype it before touching anything else
 - SIGNEDNESS PICKS THE MNEMONIC. A struct field typed `int` rather than `unsigned int` makes
   `f >> 2` emit `asr` not `lsr`, and `f >= 0x38` emit `blt`/`bge` not `blo`/`bhs`. When the only
   wrong mnemonics are shift or compare flavours, retype the FIELD, not the local (`020c0a40`).
+- an `unsigned char` compared `> 0` folds to `!= 0` (`movne`/`bne`). A `movgt`/`bgt` right after
+  the `ldrb` means the compare was signed: write `(int)p->field > 0` and keep the field
+  `unsigned char` (`021c5c5c`).
+- `ldrsh` then `lsl`/`lsr #0x10` into an `unsigned short` local is a `(short)` read of a u16 field:
+  `value = (short)p->field;`. The plain read emits a predicated `ldrh` and the function comes out
+  12 bytes short (`02155d54`).
 - Keep a packed value in an `int` local so only the genuinely narrow call site pays for the
   truncation; typing the local `unsigned short` emits `lsl`/`lsr #0x10` at every use (`020307d0`).
 - three separate `and rX,sl,#0xff` for ONE integer argument are per-call implicit conversions to an
@@ -989,6 +995,10 @@ calls (`02184bbc`, the target's second `add`/`ldrsb` pair), a predicate the func
 mutating — call it AGAIN rather than testing a held flag (`021ea85c`, 500B, matched on the first
 compile) — and a plain redundant `ldr`, written by naming the field again at the use site
 (`020307d0`).
+`02156054` — a cast on an INDEX does break CSE. With `unsigned char j` and a loop condition that
+reads `tbl[j]`, the ROM loads `tbl[j]` again in the body. Write the body's read as `tbl[(int)j]`: a
+different subscript expression, so mwcc reloads. Plain `tbl[j]` reuses the condition's register,
+and the function comes out 4 bytes short.
 `02188d9c` — `const` is the OPPOSITE lever and it moves whole blocks, not one load: declaring an
 extern lookup table `extern const short tbl[]` means `int` stores through an unrelated pointer can
 no longer alias it, so eight `ldrsh` hoist above the store block and their index adds materialise up
@@ -1220,6 +1230,9 @@ together. A switch arm that does only what "no arm" does should not be written.
 - **block the range fold** (`0205337c`): an `||`-chain of equality tests written as
   `!(a != x && a != y && a != z)` stops mwcc lowering it to `(unsigned)(a-x) <= 2` and forces real
   cmp/cmpne/cmpne/bne with a non-predicated then-block.
+- **a chain that opens with `cmpne` right after a `beq` on the same value** repeats the test the
+  branch above already decided: `if (s == 0) {...} else if (s != 0 && s != 1 && s != 2)`. Without
+  the redundant `s != 0` the chain opens with a plain `cmp` (`021dbf04`).
 - **backward `goto` into a label** reproduces mwcc's tail-merge of a duplicated reset block
   (`02002b90`).
 - **EARLY RETURN vs SINGLE EXIT decides WHERE a returned constant is materialised — both directions
