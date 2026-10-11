@@ -56,6 +56,18 @@ def load(mod):
     return m
 
 
+@check("decomment keeps the KEEP-NAME marker integrate reads",
+       "a staged file stripped by pad/decomment.py lost `// KEEP-NAME`, so integrate no longer "
+       "delinked it under its mangled symbol")
+def _decomment_keeps_markers():
+    src = ("// KEEP-NAME: the ROM symbol here is the mangled C++ name, not a func_ tag.\n"
+           "// USA: 0x02000000\n// note\nint f() { return 0; } /* x */\n")
+    out = load("pad/decomment").strip(src)
+    if "// KEEP-NAME" not in out or "// USA:" not in out or "note" in out or "/*" in out:
+        return "stripped to %r" % out
+    return None
+
+
 # ---------------------------------------------------------------- resumable.py
 
 @check("distances() ignores hex tails and size deltas",
