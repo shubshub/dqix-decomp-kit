@@ -59,6 +59,11 @@ def names(text):
     return {l.split()[0] for l in text.splitlines() if l.strip()}
 
 
+def addrs(text):
+    return {l.split()[0]: a.group(1).lower() for l in text.splitlines()
+            if l.strip() and (a := re.search(r"\baddr:(0x[0-9a-fA-F]+)", l))}
+
+
 def staleness():
     problems = []
     kit_tip = published(KIT, kitpaths.KIT_URL, kitpaths.KIT_BRANCH)
@@ -108,11 +113,17 @@ def decomp(decomp_tip):
         m = SYMBOLS.match(path)
         if not m:
             continue
-        gone = names("\n".join(diff_lines(REPO, decomp_tip, path, "-"))) - names(show(REPO, "HEAD", path))
+        removed = "\n".join(diff_lines(REPO, decomp_tip, path, "-"))
+        gone = names(removed) - names(show(REPO, "HEAD", path))
+        was_at = addrs(removed)
+        now_named = {a: n for n, a in addrs(show(REPO, "HEAD", path)).items()}
         for region in regions:
             other = f"config/{region}/{m.group(2)}"
             if other != path:
-                for name in sorted(gone & names(show(REPO, "HEAD", other))):
+                theirs = names(show(REPO, "HEAD", other))
+                for name in sorted(gone & theirs):
+                    if now_named.get(was_at.get(name)) in theirs:
+                        continue
                     problems.append(f"HALF RENAME {name}: gone from {path}, still in {other}; rename it there too")
     return problems
 

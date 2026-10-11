@@ -1637,8 +1637,11 @@ def _prready():
             ".github/workflows/match.yml": "on: push\n",
             "config/usa/arm9/delinks.txt": "    .text       start:0x02000000 end:0x02001000 kind:code align:32\n\n"
                                            "src/A.cpp:\n    complete\n    .text start:0x02000010 end:0x02000020\n",
-            "config/usa/arm9/symbols.txt": "Foo kind:function(arm,size=0x10) addr:0x02000010\n",
+            "config/usa/arm9/symbols.txt": "Foo kind:function(arm,size=0x10) addr:0x02000010\n"
+                                           "data_02000030 kind:data(any) addr:0x02000030\n"
+                                           "data_02000040 kind:data(any) addr:0x02000040\n",
             "config/eur/arm9/symbols.txt": "Foo kind:function(arm,size=0x10) addr:0x02000010\n",
+            "config/jpn/arm9/symbols.txt": "data_02000040 kind:data(any) addr:0x02000040\n",
             "src/A.cpp": "void Foo() {}\n"})
         commit(pub_kit, {n: open(f"{KIT}/{n}", encoding="utf-8").read()
                          for n in ("prready.py", "delinked.py", "kitpaths.py")}
@@ -1659,7 +1662,10 @@ def _prready():
                 return f"a current checkout was refused by prready.py {mode}: {out.strip()[-300:]}"
         commit(decomp, {".github/workflows/match.yml": "on: pull_request\n",
                         "src/Dead.cpp": "void Dead() {}\n",
-                        "config/usa/arm9/symbols.txt": "Bar kind:function(arm,size=0x10) addr:0x02000010\n"})
+                        "config/usa/arm9/symbols.txt": "Bar kind:function(arm,size=0x10) addr:0x02000010\n"
+                                                       "data_02000030 kind:data(any) addr:0x02000030\n"
+                                                       "data_02000040 kind:data(any) addr:0x02000040\n",
+                        "config/jpn/arm9/symbols.txt": "data_02000030 kind:data(any) addr:0x02000040\n"})
         commit(kit, {"worker_src/deadends.md": "# dead ends\n02000010\tstale\n02000040\topen\n",
                      "worker_src/core.md": "# core\nrule (02000010)\nrule (02000400)\n"})
         commit(pub_decomp, {"src/A.cpp": "void Foo() { }\n"})
@@ -1674,6 +1680,8 @@ def _prready():
                 return f"prready.py {mode}: exit {code}, missing {missing}: {out.strip()[-400:]}"
             if mode == "kit" and "CITATION 02000010" in out:
                 return f"prready.py kit flagged a landed citation: {out.strip()[-400:]}"
+            if mode == "decomp" and "HALF RENAME data_02000040" in out:
+                return f"prready.py decomp flagged a region port taking the USA name: {out.strip()[-400:]}"
         code, out = prready("--hook", stdin=json.dumps({"tool_input": {"command": "gh pr create -R ZevyaDev/dqix-decomp"}}))
         if code != 2 or "HALF RENAME" not in out:
             return f"the hook let gh pr create through on a stale decomp: exit {code}"
