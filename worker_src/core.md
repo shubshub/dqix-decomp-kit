@@ -22,7 +22,7 @@ Every `wgate` run ends with `RESIDUE <CLASS> <metric> <detail>`. Route on it:
 
 | class | what it means | do this |
 |---|---|---|
-| `NO-COMPILE` | it does not build | read the first error only; it is usually one declaration or cast |
+| `NO-COMPILE` | it does not build | read the first error only; a second prototype of a function the headers already declare is the usual one (`0216806c`, `02168354`) |
 | `OVERGEN` / `UNDERGEN` | wrong length | no colouring rewrite can help while the size is wrong — fix the shape first |
 | `LOOP-SHAPE` | branch targets differ | a loop/guard is built differently. Declaration order is INERT here |
 | `REGPERM` | only register numbers differ | `colorsweep --apply`, then recipe #9 (callee-saved) or #15 (scratch) |
@@ -283,7 +283,10 @@ Propagation cannot fold `&g` through the increment; a later pass cancels `++` ag
 arithmetic emitted is unchanged and only the address formation moves. Two ZoneFeatures functions
 that previously matched only under a file-wide `off` match byte-exact at the `-O2` default this way.
 `colorsweep` r27 generates both this and the `instance--` / `(instance + 1)` mirror, so run the sweep
-before reaching for the pragma. The same trick on an integer (`v++` … `v - 1`) does NOT survive —
+before reaching for the pragma. When the base's two adds must stay separate, the lever is the
+pointer formed one element past the object, `l = (T *)(base + off) + 1;`. Which read then keeps the
+add differs per function, so try both: `l--; l->f` (`0215d864`, where `(l - 1)->f` folds `#0xc00`)
+and `(l - 1)->f` (`02164d14`). The same trick on an integer (`v++` … `v - 1`) does NOT survive —
 that folds at propagation time; it is pointer arithmetic that outlives the pass.
 
 Caching a field in a local is the same lever pointed the other way: re-reading `p->b` at its second
@@ -307,6 +310,14 @@ The VALUE matters as much as the arity. Passing `0` where a nearby block store a
 the two share one constant: the store's zero CSEs into the argument register and pushes the object
 pointer off r1, which is the whole residue (`021d9340`, 2332B, 8 bytes). Read what the surrounding
 code already materialises before choosing the extra argument.
+
+When `symbols.txt` already binds the void mangling, cast at the call instead of redeclaring it.
+A new declaration would change the committed symbol:
+
+    ((int (*)(char*))_Z33CheckAndClearEntryStatus_0215b7d0v)(base);
+
+`021631e8` keeps `base` in r0 that way. `02160068` passes the extra `0` through the same kind of
+cast, on a two-parameter symbol.
 
 **The reverse: a STALE argument register means the call passes FEWER arguments** (`02178910`). If r1
 still holds an unrelated pointer at the call and the value you expected there lives only in r2 (for
@@ -357,7 +368,7 @@ expression, hoisting an operand first. Declaration order is a CALLEE-SAVED lever
 here. Each site is independent — with several such blocks the answer may be swapping one and not the
 other, so give `colorsweep` depth for the combinations instead of rewriting by hand.
 
-### A CALLEE-SAVED ROTATION IS VREG NUMBERING — set it by declaration order (`0215d63c`, `021615bc`)
+### A CALLEE-SAVED ROTATION IS VREG NUMBERING — set it by declaration order (`0215d63c`, `021615bc`, `0216049c`)
 Simplify scans vregs in ascending order and the last node pushed takes the lowest free register, so
 "X must colour before Y" means X needs a HIGHER vreg number. Declared locals are numbered in REVERSE
 textual order regardless of scope: to raise a number, declare it EARLIER; to land between two
@@ -807,7 +818,7 @@ is register NUMBERS around a byte value, retype it before touching anything else
   `forced = 1` / `mode = 0` gets folded into its uses; typed `unsigned char` it stays a real value,
   so an inline reuses it (`ldrle` reload), its store sinks below the neighbouring `mov`, and a reset
   that writes `0.0f` emits the `mov r0,r0` copy. Retype flag locals when those three symptoms show.
-  Same for a predicated loop flag (`021dcf14`): as `int` its `streq` lands before the adjacent
+  Same for a predicated loop flag (`021dcf14`, `02159900`): as `int` its `streq` lands before the adjacent
   conditional store; `unsigned char` puts it after. A global whose store pins later loads there
   was the inline-accessor static (see "A CONSTANT HOISTED ABOVE A GLOBAL'S POOL LOAD").
 - a truncation the ROM does UNCONDITIONALLY (`and #0xff`, not predicated `andeq`) is a narrow local bound before the `if` (`unsigned char b = v;`) (`02159d0c`).
@@ -1303,7 +1314,11 @@ wrong and a byte-perfect function still fails the gate:
 - a byte read and later cleared through ONE `add rX,gs,#0x7000` (`ldrb [rX,#0xf72]` …
   `strb [rX,#0xf72]`) is a member-array access, `*(unsigned char*)&gs->unk_6fc0[0x7f72 - 0x6fc0]`.
   `((unsigned char*)gs)[0x7f72]` splits the store as `#0x72`+`#0x7f00` into a second register;
-  the plain `char` member gives `ldrsb` (`main:02000c9c`).
+  the plain `char` member gives `ldrsb` (`main:02000c9c`). A `char *` walked as `e[0]` / `e[4]`,
+  or as the flag byte `el[0xc5]`, is the same `ldrsb`; the pointer is `unsigned char *`
+  (`021544f4`, `0215c988`). Indexing an `int *` taken at the first field
+  (`int *q = &s->id; short cur = q[1]; short id = q[0];`) is what keeps that base in one
+  register. A `char *` plus the raw offset does not (`02160004`).
 
 ## DUPLICATE POOL WORD — the alias also works for DATA and BSS
 One symbol referenced twice ALWAYS dedupes to a single pool word. Declare a second extern named
