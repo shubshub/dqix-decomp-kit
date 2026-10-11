@@ -12,12 +12,6 @@ TSV = os.environ.get("LEVERCHECK_TSV", f"{SP}/wlog/levers.tsv")
 
 
 def doc_paths(kit=None):
-    """worker_src files a citation is read from.
-
-    The default used to join the two paths with os.pathsep and split them again. On Linux that
-    separator is ':', so a checkout path containing one — this tree's does — became several
-    nonexistent pieces and every citation looked unpromoted.
-    """
     if kit is None and os.environ.get("LEVERCHECK_DOCS"):
         return [p for p in os.environ["LEVERCHECK_DOCS"].split(os.pathsep) if p]
     root = kit or KIT
