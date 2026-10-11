@@ -289,12 +289,42 @@ def _decl_independent(a, b):
     return not any(op in a + b for op in ("++", "--"))
 
 
+def _r4_local_lines(text):
+    token = r'//[^\n]*|/\*[\s\S]*?\*/|"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\''
+    code = re.sub(token, lambda m: re.sub(r'[^\n]', ' ', m.group()), text)
+    code = re.sub(r'(?m)^[ \t]*#[^\n]*', '', code)
+    scopes, header, local = [], '', set()
+    for i, line in enumerate(code.split('\n')):
+        if scopes and scopes[-1]:
+            local.add(i)
+        for char in line + '\n':
+            if char == '{':
+                record = re.search(r'\b(?:struct|class|union)\b[^(){};]*$', header)
+                function = (re.search(r'\)\s*(?:const\s*)?$', header)
+                            and not re.search(r'\b(?:if|for|while|switch|catch)\s*\(', header)
+                            and '=' not in header)
+                scopes.append(False if record else bool(function or (scopes and scopes[-1])))
+                header = ''
+            elif char == '}':
+                if scopes:
+                    scopes.pop()
+                header = ''
+            elif char == ';':
+                header = ''
+            else:
+                header += char
+    return local
+
+
 def r4_decl_reorder(text):
     """Swap two adjacent independent declarations (recipe #9: reverse definition order)."""
     out = []
     lines = text.split("\n")
+    local = _r4_local_lines(text)
     decl = re.compile(r"^\s*(unsigned |signed |const )*[\w:]+\s*\**\s*%s\s*(=[^;]*)?;\s*$" % IDENT)
     for i in range(len(lines) - 1):
+        if i not in local or i + 1 not in local:
+            continue
         a, b = lines[i], lines[i + 1]
         if not (decl.match(a) and decl.match(b)):
             continue

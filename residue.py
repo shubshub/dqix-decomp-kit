@@ -9,6 +9,25 @@ import re
 CLASSES = ("MATCH", "NO-COMPILE", "OVERGEN", "UNDERGEN", "LOOP-SHAPE", "REGPERM",
            "SCHED", "OPERAND", "SHAPE", "NO-ARTIFACT", "RELOC-WRONG", "UNKNOWN")
 
+RESIDUE_LINE = re.compile(r"^RESIDUE\s+(\S+)\s+(-?\d+)\s*(.*)$", re.M)
+HEADLINE = re.compile(r"^(?:MATCH|RESIDUE \S+ -?\d+)", re.M)
+
+
+def parse_verdict(text):
+    hit = RESIDUE_LINE.search(text)
+    if hit:
+        return hit.group(1), int(hit.group(2)), hit.group(3).strip()
+    lines = [l for l in text.replace("\r", "").split("\n") if l.strip()]
+    if lines and lines[-1].strip() == "MATCH":
+        return "MATCH", 0, ""
+    return "UNKNOWN", -1, (lines[-1][:160] if lines else "no output")
+
+
+def headline(text):
+    m = HEADLINE.search(text)
+    return m.group(0) if m else "?"
+
+
 _REG = re.compile(r"\b(?:r\d+|sb|sl|fp|ip|lr|sp|pc)\b")
 _BRANCH = re.compile(r"^b(?:l|x|lx)?(?:eq|ne|cs|hs|cc|lo|mi|pl|vs|vc|hi|ls|ge|lt|gt|le|al)?$")
 _CALLEE_SAVED = re.compile(r"\b(?:r[4-9]|r1[01]|sl|fp)\b")

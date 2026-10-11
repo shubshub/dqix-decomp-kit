@@ -17,9 +17,10 @@ _kpsys.path.insert(0, _kpos.path.dirname(_kpos.path.dirname(_kpos.path.abspath(_
 import kitpaths as _kp
 import itertools
 import os
-import re
 import subprocess
 import sys
+
+import residue
 
 SP = _kp.SP
 KIT = _kp.KIT
@@ -31,18 +32,19 @@ def gate(mod, addr, path):
     env.pop("WGATE_SESSION", None)
     r = subprocess.run([sys.executable, f"{KIT}/wgate.py", mod, addr, path],
                        capture_output=True, text=True, cwd=REPO, env=env)
-    for line in ((r.stdout or "") + (r.stderr or "")).splitlines():
-        m = re.match(r"^(MATCH|RESIDUE \w+ -?\d+)", line)
-        if m:
-            return m.group(0)
-    return "?"
+    return residue.headline((r.stdout or "") + (r.stderr or ""))
+
+
+UNSCORED = 1 << 20
 
 
 def score(v):
-    if v.startswith("MATCH"):
+    cls, n, _ = residue.parse_verdict(v)
+    if cls == "MATCH":
         return -1
-    m = re.match(r"RESIDUE \w+ (-?\d+)", v)
-    return abs(int(m.group(1))) if m else 1 << 20
+    if cls in ("NO-COMPILE", "UNKNOWN"):
+        return UNSCORED
+    return abs(n)
 
 
 def main():
@@ -56,7 +58,7 @@ def main():
         sys.exit("marker block not found verbatim in %s" % src)
     work = f"{SP}/handwork/permorder_{addr}"
     os.makedirs(work, exist_ok=True)
-    best, bestv, n = (1 << 20), None, 0
+    best, bestv, n = UNSCORED, None, 0
     for perm in itertools.permutations(range(len(decls))):
         body = tmpl.replace("{decls}", "\n".join(decls[i] for i in perm))
         p = f"{work}/p.cpp"

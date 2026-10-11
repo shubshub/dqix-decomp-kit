@@ -986,7 +986,6 @@ def _r55():
        "landed evolve crack never reached the promotion gate, and an in-memory announced set re-fired "
        "the same lever on every re-arm")
 def _levercheck_boards():
-    import shutil
     import subprocess
     import tempfile
     d = tempfile.mkdtemp()
@@ -1009,7 +1008,7 @@ def _levercheck_boards():
     keys = [ln.split()[0] for ln in r.stdout.splitlines() if ln.strip()]
     if keys != ["02011111"] or r.returncode != 1:
         return "levercheck --keys gave %s (exit %d); expected only the landed uncited 02011111" % (keys, r.returncode)
-    bash = shutil.which("bash") or "bash"
+    bash, env = _kp.bash(env)
     first = subprocess.run([bash, f"{KIT}/leverwatch.sh", "--once", "1"], capture_output=True, text=True,
                            env=env, timeout=60)
     if first.returncode != 0 or first.stdout.count("LEVER NEEDS PROMOTING") != 1 or "02011111" not in first.stdout:
@@ -1150,6 +1149,40 @@ def _r4_same_type():
                        ("an increment in the pair", "    int a = 1;", "    int b = c++;")):
         if n(x, y):
             return "swapped a dependent pair: %s" % name
+    return None
+
+
+@check("r4 preserves struct/class/union layout while reordering local declarations",
+       "ov031:0223de7c colorsweep applied declswap@4 to primaryX/primaryY struct members; "
+       "a smaller byte difference hid a changed input-object layout")
+def _r4_preserves_record_layout():
+    C = load("colorsweep")
+    for kind in ("struct", "class", "union"):
+        record = (kind + " Coordinates\n{\n"
+                  "    unsigned short primaryX;\n    unsigned short primaryY;\n};\n")
+        for nested in (False, True):
+            text = ("void f() {\n" + record if nested else record + "void f() {\n")
+            text += ("    // struct Fake {\n"
+                     "    const char* brace = \"} union Fake {\";\n"
+                     "    int left;\n    int right;\n"
+                     "    if (left) {\n        int innerA;\n        int innerB;\n    }\n}\n")
+            candidates = C.r4_decl_reorder(text)
+            if not candidates:
+                return "lost local declaration swaps for %s, nested=%s" % (kind, nested)
+            for label, candidate in candidates:
+                if record not in candidate:
+                    return "%s changed %s member layout, nested=%s" % (label, kind, nested)
+            if not any("    int right;\n    int left;" in c for _, c in candidates):
+                return "lost function-local pair"
+            if not any("        int innerB;\n        int innerA;" in c for _, c in candidates):
+                return "lost nested-block local pair"
+    method = ("class C {\n    int first;\n    int second;\n"
+              "    void f() {\n        int a;\n        int b;\n    }\n};\n")
+    candidates = C.r4_decl_reorder(method)
+    if not any("        int b;\n        int a;" in c for _, c in candidates):
+        return "lost method-local pair"
+    if any("    int first;\n    int second;" not in c for _, c in candidates):
+        return "changed method owner's member layout"
     return None
 
 
@@ -1331,10 +1364,8 @@ def _staging_sweep_keeps_match():
         os.makedirs(os.path.join(d, "wip"))
         with open(os.path.join(d, "wip", "0201aaaa.cpp"), "w", encoding="utf-8") as fh:
             fh.write("// USA: func_0201aaaa\n")
-        bash = "C:/Program Files/Git/bin/bash.exe"
-        if not os.path.isfile(bash):
-            bash = "bash"
-        r = subprocess.run([bash, "-c", script], capture_output=True, text=True)
+        bash, benv = _kp.bash()
+        r = subprocess.run([bash, "-c", script], capture_output=True, text=True, env=benv)
         if r.returncode != 0:
             return "sweep block failed to run: %s" % (r.stderr or "").strip()[:200]
         left = sorted(n for n in os.listdir(stage) if n.endswith(".cpp"))
@@ -1654,7 +1685,13 @@ def _prready():
                                            "data_02000040 kind:data(any) addr:0x02000040\n",
             "config/eur/arm9/symbols.txt": "Foo kind:function(arm,size=0x10) addr:0x02000010\n",
             "config/jpn/arm9/symbols.txt": "data_02000040 kind:data(any) addr:0x02000040\n",
-            "src/A.cpp": "void Foo() {}\n"})
+            "config/usa/arm9/overlays/ov001/delinks.txt": "src/B.cpp:\n    complete\n"
+                                                          "    .text start:0x02150000 end:0x02150100\n",
+            "config/usa/arm9/overlays/ov001/symbols.txt": "Baz kind:function(arm,size=0x100) addr:0x02150000\n",
+            "config/usa/arm9/overlays/ov002/delinks.txt": "",
+            "config/usa/arm9/overlays/ov002/symbols.txt": "Qux kind:function(arm,size=0x10) addr:0x02150010\n",
+            "src/A.cpp": "void Foo() {}\n",
+            "src/B.cpp": "void Baz() {}\n"})
         commit(pub_kit, {n: open(f"{KIT}/{n}", encoding="utf-8").read()
                          for n in ("prready.py", "delinked.py", "kitpaths.py", "pragmas.py")}
                | {"worker_src/deadends.md": "# dead ends\n", "worker_src/core.md": "# core\n"})
@@ -1674,18 +1711,22 @@ def _prready():
                 return f"a current checkout was refused by prready.py {mode}: {out.strip()[-300:]}"
         commit(decomp, {".github/workflows/match.yml": "on: pull_request\n",
                         "src/Dead.cpp": "void Dead() {}\n",
+                        "src/Untagged.cpp": "void Untagged() {}\n",
+                        "config/jpn/arm9/delinks.txt": "src/Untagged.cpp:\n    complete\n"
+                                                       "    .text start:0x02000020 end:0x02000030\n",
                         "src/A.cpp": "#pragma optimize_for_size off\nvoid Foo() {}\n#pragma optimize_for_size reset\n",
                         "config/usa/arm9/symbols.txt": "Bar kind:function(arm,size=0x10) addr:0x02000010\n"
                                                        "data_02000030 kind:data(any) addr:0x02000030\n"
                                                        "data_02000040 kind:data(any) addr:0x02000040\n",
                         "config/jpn/arm9/symbols.txt": "data_02000030 kind:data(any) addr:0x02000040\n"})
         commit(kit, {"worker_src/deadends.md": "# dead ends\n02000010\tstale\n02000040\topen\n",
-                     "worker_src/core.md": "# core\nrule (02000010)\nrule (02000400)\n"})
+                     "worker_src/core.md": "# core\nrule (02000010)\nrule (02000400)\nrule (02150010)\n"})
         commit(pub_decomp, {"src/A.cpp": "void Foo() { }\n"})
         commit(pub_kit, {"README.md": "x\n"})
         want = {"decomp": ("KIT BEHIND", "DECOMP BEHIND", "OUTSIDE A MATCH .github/workflows/match.yml",
-                           "DEAD FILE src/Dead.cpp", "HALF RENAME Foo", "CODEGEN PRAGMA src/A.cpp: adds 2"),
-                "kit": ("KIT BEHIND", "NO DEAD ENDS", "UNPROVEN CITATION 02000400")}
+                           "DEAD FILE src/Dead.cpp", "HALF RENAME Foo", "CODEGEN PRAGMA src/A.cpp: adds 2",
+                           "NO USA TAG src/Untagged.cpp"),
+                "kit": ("KIT BEHIND", "NO DEAD ENDS", "UNPROVEN CITATION 02000400", "UNPROVEN CITATION 02150010")}
         for mode, needles in want.items():
             code, out = prready(mode)
             missing = [n for n in needles if n not in out]
@@ -1698,9 +1739,13 @@ def _prready():
         code, out = prready("--hook", stdin=json.dumps({"tool_input": {"command": "gh pr create -R ZevyaDev/dqix-decomp"}}))
         if code != 2 or "HALF RENAME" not in out:
             return f"the hook let gh pr create through on a stale decomp: exit {code}"
-        code, out = prready("--hook", stdin=json.dumps({"tool_input": {"command": "git status"}}))
-        if code != 0:
-            return f"the hook blocked a command that opens no pull request: exit {code} {out.strip()[-200:]}"
+        code, out = prready("--hook", stdin=json.dumps({"tool_input": {"command": "gh pr merge 5 -R ZevyaDev/dqix-decomp"}}))
+        if code != 2 or "landpr.sh" not in out:
+            return f"the hook let gh pr merge land a decomp pull request without landpr.sh: exit {code}"
+        for command in ("git status", "gh pr merge 5 -R ZevyaDev/dqix-decomp-kit"):
+            code, out = prready("--hook", stdin=json.dumps({"tool_input": {"command": command}}))
+            if code != 0:
+                return f"the hook blocked `{command}`: exit {code} {out.strip()[-200:]}"
     return None
 
 
@@ -2013,7 +2058,6 @@ def _tracked_snapshot_behaviour():
        "failed, unreadable or truncated snapshots could quarantine tracked source")
 def _finish_bulk_snapshot_behaviour():
     import subprocess
-    import shutil
     src = open(f"{KIT}/finish_wave.sh", encoding="utf-8").read()
     first = src.find("# BULK-TRACKED-BEGIN")
     last = src.find("# BULK-TRACKED-END")
@@ -2026,8 +2070,7 @@ def _finish_bulk_snapshot_behaviour():
     if addr_begin < 0 or addr_end < addr_begin: return "address reader missing"
     address_reader = src[addr_begin:addr_end]
     if 'git ls-files --error-unmatch "$f"' in src: return "per-file Git query remains"
-    bash = "C:/Program Files/Git/bin/bash.exe" if os.name == "nt" else shutil.which("bash")
-    if not bash: return "bash unavailable for behavioural snapshot test"
+    bash, benv = _kp.bash()
     for mode in ("valid","empty","git-error","missing","unreadable","truncated","load-error"):
         os.makedirs(f"{SP}/handwork", exist_ok=True)
         root = tempfile.mkdtemp(prefix="fw_snapshot_",dir=f"{SP}/handwork").replace("\\","/")
@@ -2051,7 +2094,8 @@ def _finish_bulk_snapshot_behaviour():
         if mode == "load-error": body += 'mapfile() { return 1; }\n'
         body += address_reader + duplicate_phase + '\n'
         body += 'echo safe > "$1/phase-entered"\n'
-        r = subprocess.run([bash,"--noprofile","--norc","-c",body,"snapshot-test",root],capture_output=True,text=True)
+        r = subprocess.run([bash,"--noprofile","--norc","-c",body,"snapshot-test",root],capture_output=True,text=True,
+                           env=benv)
         entered = os.path.isfile(root + "/phase-entered")
         success = mode in ("valid","empty")
         if success and (r.returncode != 0 or not entered):
@@ -2174,6 +2218,121 @@ def _regionsync_restores_only_red_modules():
             return f"the red module was committed or left in the tree: {line}"
         if git("log", "-1", "--format=%s") != "Port 1 matched files to JPN" or code != 1:
             return f"reported as {code}: {line}"
+    return None
+
+
+@check("regionsync wires into usa a file another region delinks and usa does not",
+       "#99 delinked five ov031 functions in JPN only, and nothing ported them to USA or EUR")
+def _regionsync_into_usa():
+    import subprocess
+    from types import SimpleNamespace
+    rs = load("regionsync")
+    os.makedirs(f"{SP}/handwork", exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="regionsync_usa_", dir=f"{SP}/handwork",
+                                     ignore_cleanup_errors=True) as root:
+        files = {
+            "config/usa/arm9/delinks.txt": "    .text       start:0x02000000 end:0x02001000 kind:code align:32\r\n"
+                                           "\r\nsrc/Old.cpp:\r\n    complete\r\n    .text start:0x02000000 end:0x02000010\r\n",
+            "config/usa/arm9/symbols.txt": "Old kind:function(arm,size=0x10) addr:0x02000000\n"
+                                           "New kind:function(arm,size=0x20) addr:0x02000100\n"
+                                           "Big kind:function(arm,size=0x8) addr:0x02000200\n"
+                                           "Data kind:function(arm,size=0x10) addr:0x02000300\n"
+                                           "Curated kind:function(arm,size=0x10) addr:0x02000700\n"
+                                           "Grown kind:function(arm,size=0x30) addr:0x02000900\n",
+            "config/jpn/arm9/delinks.txt": "src/New.cpp:\n    complete\n    .text start:0x02000180 end:0x020001a0\n\n"
+                                           "src/Big.cpp:\n    complete\n    .text start:0x02000400 end:0x02000410\n\n"
+                                           "src/Data.cpp:\n    complete\n    .text start:0x02000500 end:0x02000510\n"
+                                           "    .data start:0x02100000 end:0x02100008\n\n"
+                                           "src/Untagged.cpp:\n    complete\n    .text start:0x02000600 end:0x02000620\n\n"
+                                           "src/Raw.cpp:\n    complete\n    .text start:0x02000800 end:0x02000810\n\n"
+                                           "src/Grown.cpp:\n    complete\n    .text start:0x02000a00 end:0x02000a20\n",
+            "src/Old.cpp": "// USA: Old\nvoid Old() {}\n",
+            "src/New.cpp": "// USA: New\nvoid New() {}\n",
+            "src/Big.cpp": "// USA: Big\nvoid Big() {}\n",
+            "src/Data.cpp": "// USA: Data\nvoid Data() {}\n",
+            "src/Untagged.cpp": "void Untagged() {}\n",
+            "src/Raw.cpp": "// USA: func_02000700\nvoid Curated() {}\n",
+            "src/Grown.cpp": "// USA: Grown\nvoid Grown() {}\n"}
+        for path, text in files.items():
+            os.makedirs(os.path.dirname(f"{root}/{path}"), exist_ok=True)
+            with open(f"{root}/{path}", "w", encoding="utf-8", newline="") as f:
+                f.write(text)
+        for args in (("init", "-q"), ("config", "user.name", "regress"), ("config", "user.email", "regress@localhost"),
+                     ("add", "-A"), ("commit", "-q", "-m", "base")):
+            subprocess.run(["git", "-C", root, "-c", "core.autocrlf=false", *args], capture_output=True)
+        real = rs.run
+        rs.run = lambda *args: (0, "") if args[0] == "ninja" else real(*args)
+        rs.green, rs.configure, rs.kitpaths = (lambda: (True, "")), (lambda region: (0, "")), SimpleNamespace(SP=root)
+        rs.usa_gate = lambda module, start, src: "MATCH" if src.endswith("Grown.cpp") else "RESIDUE SIZE 4"
+        cwd = os.getcwd()
+        os.chdir(root)
+        try:
+            runs = [rs.sync("usa", None), rs.sync("usa", None)]
+        finally:
+            os.chdir(cwd)
+        with open(f"{root}/config/usa/arm9/delinks.txt", encoding="utf-8", newline="") as f:
+            text = f.read()
+        for name, start, end in (("New", "02000100", "02000120"), ("Raw", "02000700", "02000710"),
+                                 ("Grown", "02000900", "02000930")):
+            if f"\r\nsrc/{name}.cpp:\r\n    complete\r\n    .text start:0x{start} end:0x{end}\r\n" not in text:
+                return f"{name}.cpp was not wired at its usa function: {text!r}"
+        wrong = [n for n in ("Old", "Big", "Data", "Untagged") if text.count(f"src/{n}.cpp:") != (n == "Old")]
+        if wrong:
+            return f"wired into usa: {wrong}"
+        for code, line in runs:
+            missing = [n for n in ("Big.cpp: jpn: 0x10 bytes here, Big is 0x8 in usa, and the usa gate says RESIDUE",
+                                   "Data.cpp: jpn: owns .text, .data",
+                                   "Untagged.cpp: jpn: no `// USA:` tag") if f"NOT IN USA src/{n}" not in line]
+            if code != 1 or missing or "in sync" in line:
+                return f"exit {code}, unreported {missing}: {line}"
+        if "Port 3 matched files to USA" not in runs[0][1]:
+            return f"the port was not committed: {runs[0][1]}"
+    return None
+
+
+@check("landpr keeps both sides of a delinks.txt conflict and refuses a symbolic link",
+       "#100 conflicted only because both sides appended delinks blocks; a pull request's symlink under src/ "
+       "would have had the comment strip write through it")
+def _landpr_merge():
+    import subprocess
+    lp = load("landpr")
+    os.makedirs(f"{SP}/handwork", exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="landpr_regress_", dir=f"{SP}/handwork",
+                                     ignore_cleanup_errors=True) as root:
+        def git(*args):
+            return subprocess.run(["git", "-C", root, "-c", "user.name=t", "-c", "user.email=t@t", *args],
+                                  capture_output=True, text=True).stdout.strip()
+
+        def commit(name):
+            with open(f"{root}/delinks.txt", "a", encoding="utf-8") as f:
+                f.write(f"\nsrc/{name}.cpp:\n    complete\n    .text start:0x{name} end:0x{name}4\n")
+            git("commit", "-qam", name)
+
+        git("init", "-q", "-b", "main")
+        with open(f"{root}/delinks.txt", "w", encoding="utf-8") as f:
+            f.write("src/A.cpp:\n    complete\n    .text start:0x0 end:0x4\n")
+        git("add", "-A")
+        git("commit", "-qm", "base")
+        base = git("rev-parse", "HEAD")
+        git("checkout", "-qb", "pr")
+        commit("2")
+        blob = subprocess.run(["git", "-C", root, "hash-object", "-w", "--stdin"], input="/etc/passwd",
+                              capture_output=True, text=True).stdout.strip()
+        git("update-index", "--add", "--cacheinfo", f"120000,{blob},src/link.cpp")
+        git("commit", "-qm", "link")
+        pr = git("rev-parse", "HEAD")
+        git("checkout", "-q", "main")
+        commit("1")
+        if not subprocess.run(["git", "-C", root, "-c", "user.name=t", "-c", "user.email=t@t", "merge", "--no-ff",
+                               "-m", "Merge #5", pr], capture_output=True).returncode:
+            return "the fixture did not conflict"
+        if not lp.keep_both_delinks(root, pr):
+            return f"a delinks.txt conflict where both sides added blocks was not resolved: {git('status', '-s')}"
+        merged = git("show", "HEAD:delinks.txt")
+        if git("log", "-1", "--format=%s") != "Merge #5" or not all(f"src/{n}.cpp:" in merged for n in "A12"):
+            return f"the merge lost a side: {merged!r}"
+        if lp.symlinks(root, base, pr) != ["src/link.cpp"]:
+            return f"the symbolic link was not reported: {lp.symlinks(root, base, pr)}"
     return None
 
 
@@ -2377,10 +2536,6 @@ def _integrate_region_fixture():
        "finish_wave/integrate_fast configured USA or dropped the existing Linux toolchain environment")
 def _integration_shell_environment():
     import subprocess
-    import shutil
-    bash = "C:/Program Files/Git/bin/bash.exe" if os.name == "nt" else shutil.which("bash")
-    if not bash:
-        return "bash unavailable for integration environment test"
     for script in ("finish_wave.sh", "integrate_fast.sh"):
         source = open(f"{KIT}/{script}", encoding="utf-8").read()
         lines = source.splitlines()
@@ -2394,8 +2549,8 @@ def _integration_shell_environment():
             output = os.path.join(root, "arguments")
             harness = ('python() { printf "%s\\n" "$@" > "$CAPTURE"; }; '
                        'REGION=jpn; LOG=/dev/null;\n' + snippet)
-            env = dict(os.environ, CAPTURE=output, DQIX_PREINSTALLED_COMPILER="/tools/compiler root",
-                       DQIX_WINE="/tools/wine runner")
+            bash, env = _kp.bash(dict(os.environ, CAPTURE=output, DQIX_WINE="/tools/wine runner",
+                                      DQIX_PREINSTALLED_COMPILER="/tools/compiler root"))
             result = subprocess.run([bash, "-c", harness], env=env, capture_output=True, text=True)
             got = open(output).read().splitlines() if os.path.exists(output) else []
             want = ["tools/configure.py", "jpn", "--no-extract", "--compiler",
@@ -2559,20 +2714,151 @@ def _regionsync_runner_fixture():
             return "configure forwarded %r, expected %r" % (result, want)
 
 
-@check("integration environment fixture uses Git Bash on Windows",
-       "plain bash selected Windows System32 WSL instead of Git Bash")
-def _integration_windows_bash_fixture():
+@check("a cold integration tree configures and fetches its own compiler before sync returns",
+       "a new integration worktree had extract links but no build.ninja or compiler, so classify raised "
+       "FileNotFoundError before the wave configured; a junction to the checkout's compiler would let "
+       "the tree's first ninja rewrite the checkout's mwccarm.exe (kit PR #102)")
+def _integ_bootstrap():
+    import subprocess
+    from pathlib import Path
+    with tempfile.TemporaryDirectory() as d:
+        repo, tree, pre = Path(d, "repo"), Path(d, "tree"), Path(d, "pre")
+        (repo / "tools/mwccarm/2.0/fx").mkdir(parents=True)
+        (repo / "extract").mkdir()
+        (repo / "tools/fetch.py").write_text(
+            "import sys\nfrom pathlib import Path\nopen('events', 'a').write('fetch\\n')\n"
+            "p = Path(sys.argv[1]); p.parent.mkdir(parents=True, exist_ok=True); p.write_text('fetched')\n")
+        (repo / "tools/configure.py").write_text(
+            "import argparse, os, sys\nfrom pathlib import Path\n"
+            "p = argparse.ArgumentParser(); p.add_argument('region'); p.add_argument('--no-extract', "
+            "action='store_true'); p.add_argument('--compiler'); p.add_argument('-w')\n"
+            "a = p.parse_args()\nMWCC_VERSION = '2.0/fx'\nDECOMP_ME_COMPILER = 'fx'\n"
+            "CC_FLAGS = CC_INCLUDES = AS_FLAGS = WINE = ''\n"
+            "mwcc_root = Path(a.compiler) if a.compiler else Path('tools/mwccarm')\n"
+            "if __name__ == '__main__':\n"
+            "    if os.environ.get('FX_CONFIG_FAIL'): sys.exit(17)\n"
+            "    open('events', 'a').write('configure %s\\n' % (a.compiler or '-'))\n"
+            "    t = (mwcc_root / MWCC_VERSION / 'mwccarm.exe').as_posix()\n"
+            "    Path('build.ninja').write_text('rule fetch\\n  command = \"%s\" tools/fetch.py $out\\n"
+            "build %s: fetch\\n' % (sys.executable.replace(os.sep, '/'), t))\n")
+        main_cc = repo / "tools/mwccarm/2.0/fx/mwccarm.exe"
+        main_cc.write_text("checkout compiler")
+        (repo / ".gitignore").write_text("tools/mwccarm/\n")
+        for args in (["init", "-q", "-b", "decomp-matching"], ["add", "."],
+                     ["-c", "user.name=f", "-c", "user.email=f@f", "commit", "-qm", "f"]):
+            subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True)
+        env = {k: v for k, v in os.environ.items() if k not in ("DQIX_PREINSTALLED_COMPILER", "DQIX_WINE")}
+        env.update(DQIX_MAIN_REPO=str(repo), DQIX_INTEG=str(tree), DQIX_PUBLISH="local", DQIX_REGION="jpn")
+
+        def sync(**extra):
+            return subprocess.run([sys.executable, f"{KIT}/integ_tree.py", "sync"], capture_output=True,
+                                  text=True, env=dict(env, **extra))
+        cold = sync()
+        if cold.returncode or cold.stdout.strip() != str(tree).replace("\\", "/"):
+            return "cold sync: exit %d, stdout %r, %s" % (cold.returncode, cold.stdout, cold.stderr[-300:])
+        if (tree / "events").read_text().split("\n")[:2] != ["configure -", "fetch"]:
+            return "cold sync did not configure then fetch: %r" % (tree / "events").read_text()
+        subprocess.run(["ninja", "-t", "clean"], cwd=tree, capture_output=True)
+        subprocess.run(["ninja", "tools/mwccarm/2.0/fx/mwccarm.exe"], cwd=tree, capture_output=True)
+        if main_cc.read_text() != "checkout compiler":
+            return "the tree's first build rewrote the checkout's compiler"
+        if sync(FX_CONFIG_FAIL="1").returncode:
+            return "a warm tree was reconfigured"
+        (tree / "build.ninja").unlink()
+        failed = sync(FX_CONFIG_FAIL="1")
+        if failed.returncode == 0 or failed.stdout.strip():
+            return "a failed configure still printed a tree path"
+        (pre / "2.0/fx").mkdir(parents=True)
+        (pre / "2.0/fx/mwccarm.exe").write_text("preinstalled")
+        if sync(DQIX_PREINSTALLED_COMPILER=str(pre)).returncode or \
+                (tree / "events").read_text().split("\n")[-2] != "configure " + str(pre):
+            return "a preinstalled compiler was not passed to configure: %r" % (tree / "events").read_text()
+    return None
+
+
+@check("landpr refreshes the build report after it publishes",
+       "landpr.py never ran `ninja report`, so after a pull-request landing cov.py and health kept "
+       "the previous wave's count while CI showed the new one")
+def _landpr_report():
     import ast
-    from types import SimpleNamespace
-    source = open(f"{KIT}/regress.py", encoding="utf-8").read()
-    fn = next(n for n in ast.parse(source).body if isinstance(n, ast.FunctionDef) and
-              n.name == "_integration_shell_environment")
-    assignments = [n for n in fn.body if isinstance(n, ast.Assign) and
-                   any(isinstance(t, ast.Name) and t.id == "bash" for t in n.targets)]
-    ns = dict(os=SimpleNamespace(name="nt"), shutil=SimpleNamespace(which=lambda name: "System32/bash.exe"))
-    exec(compile(ast.Module(body=assignments, type_ignores=[]), "bash", "exec"), ns)
-    if ns.get("bash") != "C:/Program Files/Git/bin/bash.exe":
-        return "Windows fixture did not select Git Bash"
+    tree = ast.parse(open(f"{KIT}/landpr.py", encoding="utf-8").read())
+    main = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "main")
+    calls = [ast.unparse(c) for c in ast.walk(main) if isinstance(c, ast.Call)]
+    if not any("'ninja', 'report'" in c for c in calls):
+        return "landpr.main() does not run `ninja report`"
+    if not any("integ_tree.py" in c and "'report'" in c for c in calls):
+        return "landpr.main() does not copy the report out of the integration tree"
+    return None
+
+
+@check("the cached kit-behind count is dropped when the checkout's HEAD moves",
+       "behind() cached `5` for 10 minutes after a manual pull, so every dispatcher restart saw KIT "
+       "UPDATE WAITING, ran kit_update (up to date) and restarted again, in a loop")
+def _behind_cache_keyed_to_head():
+    K = load("kitpaths")
+    head = __import__("subprocess").run(["git", "-C", KIT, "rev-parse", "HEAD"], capture_output=True,
+                                        text=True).stdout.strip()
+    with tempfile.TemporaryDirectory() as d:
+        os.makedirs(os.path.join(d, "wlog"))
+        K.SP, K.KIT_URL = d, os.path.join(d, "no-such-remote")
+        stamp = os.path.join(d, "wlog", ".kit_fresh")
+        open(stamp, "w").write("5 " + head)
+        if K.behind() != 5:
+            return "a fresh stamp for the current HEAD was not used"
+        open(stamp, "w").write("5 0000000000000000000000000000000000000000")
+        if K.behind() != 0:
+            return "a stamp written for another HEAD still reported 5 commits behind"
+    return None
+
+
+@check("cov.py reads the newer of the checkout's and the integration tree's build report",
+       "waves build in the integration tree, so cov.py and health read a two-day-old report from the "
+       "decomp checkout: 90.04% while CI on the same commit said 92.40%")
+def _cov_newest_report():
+    C = load("cov")
+    with tempfile.TemporaryDirectory() as d:
+        trees = [os.path.join(d, "repo"), os.path.join(d, "integ")]
+        for i, t in enumerate(trees):
+            p = os.path.join(t, "build", C.REGION, "report.json")
+            os.makedirs(os.path.dirname(p))
+            open(p, "w").close()
+            os.utime(p, (1000 + i, 1000 + i))
+        if os.path.normpath(C.newest_report(trees)) != os.path.normpath(
+                os.path.join(trees[1], "build", C.REGION, "report.json")):
+            return "cov.py picked the older report"
+    return None
+
+
+@check("kitpaths.bash() finds Git Bash, never WSL, and its PATH runs coreutils",
+       "PATH-only selection chose System32 WSL bash under native Windows Python, and Git's usr/bin "
+       "bash without usr/bin on PATH failed with `mkdir: command not found` from PowerShell (kit PR #133)")
+def _git_bash():
+    import subprocess
+    from unittest import mock
+    if os.name == "nt":
+        with tempfile.TemporaryDirectory() as d:
+            for p in ("Windows/System32/bash.exe", "Portable/cmd/git.exe", "Portable/usr/bin/bash.exe"):
+                os.makedirs(os.path.dirname(os.path.join(d, p)), exist_ok=True)
+                open(os.path.join(d, p), "w").close()
+            which = {"bash": os.path.join(d, "Windows/System32/bash.exe")}
+            with mock.patch.dict(os.environ, {"PATH": "x"}, clear=True), \
+                    mock.patch.object(_kp.shutil, "which", lambda n: which.get(n)):
+                try:
+                    _kp.bash()
+                    return "kitpaths.bash() accepted WSL's System32 bash"
+                except FileNotFoundError:
+                    pass
+                which["git"] = os.path.join(d, "Portable/cmd/git.exe")
+                sh, env = _kp.bash()
+                if os.path.normcase(sh) != os.path.normcase(_kp._norm(os.path.join(d, "Portable/usr/bin/bash.exe"))):
+                    return "kitpaths.bash() picked %s, not the Git root beside git.exe" % sh
+    sh, env = _kp.bash(dict(os.environ, PATH=os.environ.get("SystemRoot", "/nonexistent")))
+    with tempfile.TemporaryDirectory() as d:
+        r = subprocess.run([sh, "--noprofile", "--norc", "-c", 'mkdir -p "$1/a/b" && find "$1/a" -name b',
+                            "x", d.replace("\\", "/")], capture_output=True, text=True, env=env, timeout=30)
+        if r.returncode or not r.stdout.strip():
+            return "the returned shell cannot run coreutils: " + (r.stderr or r.stdout)[:200]
+    return None
 
 
 @check("compiler sweeps enumerate the configured compiler root",
@@ -2580,13 +2866,9 @@ def _integration_windows_bash_fixture():
 def _compiler_sweep_root_fixture():
     import ast
     import glob
-    import shutil
     import subprocess
     from pathlib import Path
     from types import SimpleNamespace
-    bash = "C:/Program Files/Git/bin/bash.exe" if os.name == "nt" else shutil.which("bash")
-    if not bash:
-        return "bash unavailable for compiler sweep test"
     with tempfile.TemporaryDirectory() as root:
         compiler_root = Path(root, "compiler root")
         compiler = compiler_root / "2.0" / "sp2p2" / "mwccarm.exe"
@@ -2602,8 +2884,8 @@ def _compiler_sweep_root_fixture():
         snippet = source[source.index('cd "$REPO"'):]
         harness = ('python() { case "$1" in */buildcfg.py) printf "%s\\n" "$ROOT";; '
                    '*/wdiff.py) printf "%s\\n" "$MWCC";; esac; };\n' + snippet)
-        result = subprocess.run([bash, "-c", harness], capture_output=True, text=True,
-                                env=dict(os.environ, ROOT=compiler_root.as_posix(), REPO=root, KIT=KIT))
+        bash, env = _kp.bash(dict(os.environ, ROOT=compiler_root.as_posix(), REPO=root, KIT=KIT))
+        result = subprocess.run([bash, "-c", harness], capture_output=True, text=True, env=env)
         if result.returncode or not re.search(r"2\.0/sp2p2\s+2\.0/sp2p2", result.stdout):
             return "ccsweep did not use the configured root: " + result.stdout + result.stderr
         source = Path(KIT, "buildcfg.py").read_text(encoding="utf-8")
@@ -2648,6 +2930,73 @@ def _blocker_implausible():
             return "near-miss queue held %r" % queued
     if not load("blockercheck").unfinished({"cls": "IMPLAUSIBLE", "metric": "4", "size": 64}):
         return "blockercheck counts IMPLAUSIBLE as an uncracked idiom class"
+
+
+@check("claim.py skips an address another contributor reserved, and never a range's end",
+       "claim.py did not read kit issues, so the xl queue opened on ov003 021539a0 (#178) and "
+       "ov012 02184d80 (#227), both reserved by contributors")
+def _reserved_skipped():
+    R = load("reserved")
+    issues = [{"number": 1, "author": {"login": "other"}, "title": "ov012",
+               "body": "| Module | Start | End exclusive |\n|---|---|---|\n"
+                       "| ov012 | `0x02184d80` | `0x0218558c` |\n"
+                       "- Range: [021ce524, 021ce5b4)\nov017 021c0000 021c1000\n"},
+              {"number": 2, "author": {"login": "me"}, "title": "Fleet claims",
+               "body": "| ov024 | `021da9e0` |"}]
+    prs = [{"number": 3, "author": {"login": "other"}, "title": "x", "body": "",
+            "files": [{"path": "src/func_ov031_02221f78.cpp"}, {"path": "src/Main/GetData021052b4.cpp"}],
+            "diff": "+    .text start:0x020aa000 end:0x020aa100\n-    .text start:0x020bb000 end:0x020bb100\n"}]
+    got = set(R.holders(issues, prs, "me"))
+    want = {"02184d80", "021ce524", "021c0000", "021c1000", "02221f78", "021052b4", "020aa000"}
+    if got != want:
+        return "holders() returned %s, want %s" % (sorted(got), sorted(want))
+    if set(R.holders(issues, prs, "me", {"someone"})):
+        return "holders() honoured a login RESERVED_FROM does not name"
+    issues[0]["updatedAt"] = "2020-01-01T00:00:00Z"
+    if set(R.holders(issues, prs, "me")) != {"02221f78", "021052b4", "020aa000"}:
+        return "holders() honoured an issue untouched for longer than STALE_DAYS"
+    C = load("claim")
+    old, C.reserved._HELD = C.reserved._HELD, {"0dead000"}
+    try:
+        if "0dead000" not in C.skiplist():
+            return "claim.skiplist() ignores reserved addresses"
+    finally:
+        C.reserved._HELD = old
+    return None
+
+
+@check("a hyphenated residue class ranks by its class, and a failed compile never wins",
+       "`RESIDUE \\w+` cannot match LOOP-SHAPE or NO-COMPILE: flagsweep ranked LOOP-SHAPE 308 as `?`, "
+       "and permorder scored NO-COMPILE -1 as 1, ahead of UNDERGEN 4 (kit PR #130)")
+def _hyphenated_residue():
+    F, P = load("flagsweep"), load("pad/permorder")
+    if F.rank("RESIDUE LOOP-SHAPE 308") != (2, 308):
+        return "flagsweep.rank(LOOP-SHAPE 308) = %r" % (F.rank("RESIDUE LOOP-SHAPE 308"),)
+    if not P.score("RESIDUE NO-COMPILE -1") > P.score("RESIDUE UNDERGEN 4"):
+        return "permorder scores a failed compile ahead of UNDERGEN 4"
+    text = "gate output\nRESIDUE LOOP-SHAPE 308 1 branch target(s) differ\n"
+    if load("residue").headline(text) != "RESIDUE LOOP-SHAPE 308":
+        return "residue.headline() dropped a hyphenated class"
+    if load("blocker").residue.parse_verdict(text)[:2] != ("LOOP-SHAPE", 308):
+        return "blocker no longer parses through residue.parse_verdict"
+    return None
+
+
+@check("pull_worker sizes the claimed function from the config",
+       "size_of read symbols.txt through a literal \"$REPO\" inside a quoted heredoc, so every claim "
+       "logged 0B and got the small doc and the $3 cap: ov016 0218d2f4 (2924B) was served that way")
+def _worker_size_of():
+    import subprocess
+    size, addr = max(load("claim").function_sizes("main"))
+    src = open(f"{KIT}/pull_worker.sh", encoding="utf-8").read()
+    fn = re.search(r"(?ms)^size_of\(\) \{.*?^\}\n", src).group(0)
+    bash, env = _kp.bash(dict(os.environ, MARG="main", KIT=KIT))
+    r = subprocess.run([bash, "-c", fn + 'size_of "$1"', "x", addr], capture_output=True, text=True,
+                       env=env, timeout=60)
+    if r.stdout.strip() != str(size):
+        return "size_of main %s printed %r, want %d (%s)" % (addr, r.stdout.strip(), size,
+                                                             r.stderr.strip()[-200:])
+    return None
 
 
 if __name__ == "__main__":

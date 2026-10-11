@@ -10,17 +10,16 @@ import os as _kpos, sys as _kpsys
 _kpsys.path.insert(0, _kpos.path.dirname(_kpos.path.abspath(__file__)))
 import kitpaths as _kp
 import os
-import re
 import subprocess
 import sys
 import time
 
 import plausible
+import residue
 
 SP = _kp.SP
 KIT = _kp.KIT
 TSV = f"{SP}/wlog/blockers.tsv"
-RESIDUE_LINE = re.compile(r"^RESIDUE\s+(\S+)\s+(-?\d+)\s*(.*)$", re.M)
 NOT_RESIDUE = {"MATCH", "UNKNOWN", "ALREADY-COMMITTED"}
 
 
@@ -30,14 +29,7 @@ def gate_residue(mod, addr, src):
     env.pop("WGATE_SESSION", None)
     proc = subprocess.run([sys.executable, f"{KIT}/wgate.py", mod, addr, src],
                           capture_output=True, text=True, env=env)
-    text = (proc.stdout or "") + (proc.stderr or "")
-    hit = RESIDUE_LINE.search(text)
-    if hit:
-        return hit.group(1), int(hit.group(2)), hit.group(3).strip()
-    lines = [l for l in text.replace("\r", "").split("\n") if l.strip()]
-    if lines and lines[-1].strip() == "MATCH":
-        return "MATCH", 0, ""
-    return "UNKNOWN", -1, (lines[-1][:160] if lines else "no output")
+    return residue.parse_verdict((proc.stdout or "") + (proc.stderr or ""))
 
 
 def find_artifact(mod, addr):

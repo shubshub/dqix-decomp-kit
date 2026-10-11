@@ -34,19 +34,7 @@ fi
 # 0 of 7 for $16.63. The batch driver had always split these into separate worker types; the pull
 # loop lost that distinction when it was written.
 size_of() {   # $1 = addr -> function size in bytes (0 if unknown)
-  python - "$MARG" "$1" <<'PY'
-import re, sys
-REPO = "$REPO"
-mod, addr = sys.argv[1], sys.argv[2].lower()
-cfg = f"{REPO}/config/usa/arm9" if mod == "main" else f"{REPO}/config/usa/arm9/overlays/ov{mod}"
-try:
-    sym = open(f"{cfg}/symbols.txt", encoding="utf-8", errors="ignore").read()
-    m = re.search(r"kind:function\((?:arm|thumb),size=0x([0-9a-fA-F]+)\)\s+addr:0x0*%s\b"
-                  % addr.lstrip("0"), sym)
-    print(int(m.group(1), 16) if m else 0)
-except OSError:
-    print(0)
-PY
+  python "$KIT/claim.py" "$MARG" --size "$1" 2>/dev/null || echo 0
 }
 
 # THE CAP MUST SCALE WITH THE WORK. A flat $3 is generous for a 4-byte stub and too little for a

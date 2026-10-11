@@ -21,10 +21,16 @@ import os
 import re
 import sys
 import buildcfg
+import integ_tree
 
 REPO = _kp.REPO
 REGION = buildcfg.REGION
-REPORT = f"{REPO}/build/{REGION}/report.json"
+def newest_report(trees):
+    return max((f"{t}/build/{REGION}/report.json" for t in trees),
+               key=lambda p: os.path.getmtime(p) if os.path.exists(p) else 0)
+
+
+REPORT = newest_report((REPO, integ_tree.INTEG))
 CFG = f"{REPO}/{buildcfg.config_dir('main')}"
 
 FUNC = re.compile(r"(?m)^(\S+)\s+kind:function\((?:arm|thumb),size=0x([0-9a-fA-F]+)\)"

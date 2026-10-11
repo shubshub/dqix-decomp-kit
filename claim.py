@@ -33,6 +33,7 @@ import sys
 import time
 
 import buildcfg
+import reserved
 
 SP = _kp.SP
 KIT = _kp.KIT
@@ -67,7 +68,7 @@ def skiplist():
                 out.add(line.strip().split(":")[1].lower())
     except OSError:
         pass
-    return out
+    return out | reserved.load()
 
 
 _ATTEMPTS = None
@@ -471,6 +472,10 @@ def main():
             print(f"{mod} {n}")
         return 0
     mod = sys.argv[1]
+    if "--size" in sys.argv:
+        addr = sys.argv[sys.argv.index("--size") + 1].lower().removeprefix("0x").zfill(8)
+        print(dict((a, s) for s, a in function_sizes(mod)).get(addr, 0))
+        return 0
     d = claims_dir(mod)
 
     if "--release" in sys.argv:

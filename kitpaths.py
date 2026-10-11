@@ -10,11 +10,38 @@
     python kitpaths.py behind             commits the published kit is ahead of this checkout
 """
 import os
+import shutil
 import sys
 
 
 def _norm(p):
     return os.path.abspath(p).replace("\\", "/")
+
+
+def bash(base=None):
+    env = dict(os.environ if base is None else base)
+    if os.name != "nt":
+        found = shutil.which("bash")
+        if not found:
+            raise FileNotFoundError("bash is not on PATH")
+        return found, env
+    roots = [os.path.join(os.environ[k], "Git") for k in ("ProgramFiles", "ProgramW6432", "ProgramFiles(x86)")
+             if os.environ.get(k)]
+    if os.environ.get("LOCALAPPDATA"):
+        roots.append(os.path.join(os.environ["LOCALAPPDATA"], "Programs", "Git"))
+    for exe in (shutil.which("git"), shutil.which("bash")):
+        if exe:
+            d = os.path.dirname(os.path.abspath(exe))
+            while os.path.basename(d).lower() in ("cmd", "bin", "usr", "mingw32", "mingw64"):
+                d = os.path.dirname(d)
+            roots.append(d)
+    for root in roots:
+        sh = os.path.join(root, "usr", "bin", "bash.exe")
+        if os.path.isfile(sh):
+            env["PATH"] = os.pathsep.join([os.path.join(root, "usr", "bin"),
+                                           os.path.join(root, "mingw64", "bin"), env.get("PATH", "")])
+            return _norm(sh), env
+    raise FileNotFoundError("no Git Bash found: install Git for Windows")
 
 
 KIT = _norm(os.path.dirname(os.path.abspath(__file__)))
@@ -59,18 +86,21 @@ def behind():
     import subprocess
     import time
     stamp = os.path.join(SP, "wlog", ".kit_fresh")
+    run = lambda *a: subprocess.run(["git", "-C", KIT, *a], capture_output=True, text=True, timeout=30)
+    head = run("rev-parse", "HEAD").stdout.strip()
     try:
-        count = int(open(stamp, encoding="utf-8").read().strip() or 0)
-        age = time.time() - os.path.getmtime(stamp)
+        count, seen = (open(stamp, encoding="utf-8").read().split() + [""])[:2]
+        count, age = int(count), time.time() - os.path.getmtime(stamp)
     except (OSError, ValueError):
-        count, age = 0, FRESH_EVERY
-    if age >= FRESH_EVERY:
+        count, seen, age = 0, "", FRESH_EVERY
+    if age >= FRESH_EVERY or seen != head:
         os.makedirs(os.path.dirname(stamp), exist_ok=True)
-        open(stamp, "w", encoding="utf-8").write(str(count))
-        run = lambda *a: subprocess.run(["git", "-C", KIT, *a], capture_output=True, text=True, timeout=30)
+        open(stamp, "w", encoding="utf-8").write(f"{count if seen == head else 0} {head}")
         if run("fetch", "-q", KIT_URL, KIT_BRANCH).returncode == 0:
             count = int(run("rev-list", "--count", "HEAD..FETCH_HEAD").stdout.strip() or 0)
-            open(stamp, "w", encoding="utf-8").write(str(count))
+            open(stamp, "w", encoding="utf-8").write(f"{count} {head}")
+        elif seen != head:
+            count = 0
     return count
 
 

@@ -49,6 +49,7 @@ declare -A slot_pid
 last_integrate=$SECONDS
 last_sweep=$SECONDS
 last_state=0                      # 0, not $SECONDS: write STATE.md on the very first loop
+last_claimed=""
 sweep_pid=""
 update_wait=""; update_blocked=""; last_kitcheck=$((SECONDS - 600))
 rm -f "$SP/claims/UPDATE_WAITING"
@@ -182,6 +183,12 @@ while :; do
     echo "$(date '+%H:%M') repair sweep (detached)" >> "$LOG"
     python -u "$KIT/repairsweep.py" >> "$SP/wlog/repairsweep_auto.log" 2>&1 &
     sweep_pid=$!
+  fi
+
+  _claimed=$(ls -d "$SP"/claims/*/[0-9a-f]*/ 2>/dev/null | sort | tr '\n' ' ')
+  if [ "$_claimed" != "$last_claimed" ]; then
+    last_claimed=$_claimed
+    python "$KIT/reserved.py" --publish >> "$LOG" 2>&1 &
   fi
 
   # STATE.md IS GENERATED, NEVER HAND-MAINTAINED. Sessions used to keep a "State as of <date>" block

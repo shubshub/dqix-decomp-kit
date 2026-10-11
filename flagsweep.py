@@ -18,6 +18,8 @@ import re
 import subprocess
 import sys
 
+import residue
+
 SP = _kp.SP
 KIT = _kp.KIT
 REPO = _kp.REPO
@@ -35,15 +37,14 @@ for p in [f"{REPO}/config/usa/arm9/symbols.txt"] + \
 
 def rank(v):
     """Lower is better; mirrors how colorsweep scores -- right length beats wrong length."""
-    if v.startswith("MATCH"):
+    cls, n, _ = residue.parse_verdict(v)
+    if cls == "MATCH":
         return (0, 0)
-    m = re.match(r"RESIDUE (\w+) (-?\d+)", v)
-    if not m:
+    if cls == "UNKNOWN":
         return (9, 1 << 30)
-    cls, n = m.group(1), abs(int(m.group(2)))
     tier = {"REGPERM": 1, "SCHED": 1, "OPERAND": 1, "SHAPE": 2, "LOOP-SHAPE": 2,
             "UNDERGEN": 3, "OVERGEN": 3}.get(cls, 8)
-    return (tier, n)
+    return (tier, abs(n))
 
 
 def verdict(mod, addr, path, flags):
@@ -52,11 +53,7 @@ def verdict(mod, addr, path, flags):
     env.pop("WGATE_SESSION", None)
     r = subprocess.run([sys.executable, f"{KIT}/wgate.py", mod, addr, path],
                        capture_output=True, text=True, cwd=REPO, env=env)
-    for line in ((r.stdout or "") + (r.stderr or "")).splitlines():
-        m = re.match(r"^(MATCH|RESIDUE \w+ -?\d+)", line)
-        if m:
-            return m.group(0)
-    return "?"
+    return residue.headline((r.stdout or "") + (r.stderr or ""))
 
 
 def main():

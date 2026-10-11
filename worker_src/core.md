@@ -405,6 +405,8 @@ alignment qualifier. Signature: an index product like `mov #0xac; mla` re-done a
 constants re-materialised, nothing hoisted, only per-block CSE. Source: the buffer it uses is
 declared `__attribute__((aligned(4)))` on the object (`extern int data_0211e33c __attribute__((aligned(4)));`, consistent with its 0x...33c address). Any N works, on the object or via `typedef T A __attribute__((aligned(N)))`; on a STRUCT type it does nothing. colorsweep r62 tries it.
 Try that FIRST when a function shows this signature; every other lever is inert until it is right.
+The same buffer as an array, `extern unsigned char data_0211e33c[0x30000] __attribute__((aligned(4)));`,
+closed UNDERGEN 8 in a LoadFileIntoMemory caller (`021f1868`).
 
 **A load that cannot move past a store = an alias edge mwcc added** (`021de124`, decompiled). An
 access through an unresolved pointer is worst-case; an access to a known object (local static,
@@ -515,13 +517,21 @@ A pointer coalescing onto a base's register (`entries = tbl + 4` sharing `tbl`'s
 fix: share ONE function-scope variable between that case and another loop so it has two
 definitions (`021f2e6c`). Same when two values sit in each other's callee-saved registers and
 declaration position is inert: store the late call result into an EARLIER function-scope local
-(the loop's `node`) instead of a fresh one (`0216033c`).
+(the loop's `node`) instead of a fresh one (`0216033c`). Scratch registers follow the same rule: a
+field re-read into the function's existing `col`/`row` locals, col first, before
+`self->table[row * self->cols + col]` fixes an r2/r3/r4 trio that fresh locals cannot (`021f8e1c`).
 
 ### A LICM TEMP TAKES ITS SPILL SLOT AFTER THE LOCALS DECLARED BEFORE IT
 Two spilled values in each other's slots: a named pointer local (`codes = row->codes;`) is slotted
 in declaration order; deleting it and writing `row->codes[i]` makes the hoisted address a compiler
 temp created later, which swaps the slots (`021d8c30`). For a pair fed from one value, the
 assignment chain is the store order: `keepDefault = textKind = x;` stores `textKind` first.
+A pointer the ROM spills to the TOP slots, above the LICM temps, is a backend split temp, not a
+named field path: `names = (Container*)((u8*)roster + 0x684)` instead of the `+0x284` member's
+`+0x400` field gives it a high vreg and the top slot (sp+0x3c, sp+0x38 in `02161380`). A register
+that holds a partial sum (`save+0x324`) with `#0x2400` re-added at each use is the same split: one
+`List* list = (List*)(save + 0x2724);` at the top fixes a function-wide callee-saved swap
+(`021adcb0`).
 
 ### A ZERO WRITTEN AFTER CONSTANT STORES TAKES THE OTHER SCRATCH REGISTER
 `generic = 0;` written after `soundId = 3; textKind = 1;` is hoisted above the compare into r1 and
@@ -532,7 +542,9 @@ swaps r0/r1 through the block; written BEFORE them it lands in r0, as in the ROM
 `*(self + 0x195b) |= 1;` written at the use. A copy-modify-store (`int cur = F; cur += step * 16;
 F = cur;`) is an in-place update in the ROM, with the copy's only shift folded into its
 initialiser: `int old = F >> 4; F += step * 16; int n = (F >> 4) - old;` (`02065990`). colorsweep
-`r52_inline_address_local`, `r53_update_in_place`.
+`r52_inline_address_local`, `r53_update_in_place`. A hardware port is its absolute address
+(`*(volatile u32*)0x04000504`), never a negative index off another port's pointer: OVERGEN 8
+(`ov005:02155258`).
 
 ### A MULTIPLY-ACCUMULATE PICKS ITS ACCUMULATOR FROM THE SOURCE — bind the multiplicand
 `int x = A * K + B;` lets mwcc make the ADDEND the accumulator: it loads `B` first and makes `B`'s
@@ -720,7 +732,8 @@ belongs (ROM slot above `battle` => declare it before `battle`) and keep the ass
     codes = node->codes;                         // where the ROM loads it
 
 `ov025:021ebb90` (4096B) 84 -> 49 in one edit. Moving the INITIALISED declaration instead drags the
-load with it and costs more than it saves.
+load with it and costs more than it saves. Declare EVERY spilled scalar this way, in ROM slot
+order, even ones assigned first; 12-byte struct locals follow the same rule (`02176634`, 47 -> 0).
 
 ### A LITERAL-POOL OFFSET DIFF CAN HIDE A WRONG CONSTANT — compare the VALUES, not the offsets
 `ldr r0, [pc, #0x584] | ldr r0, [pc, #0x58c]` reads like pool-layout noise and usually is. It can
@@ -791,6 +804,8 @@ is register NUMBERS around a byte value, retype it before touching anything else
 - `ldrsh` then `lsl`/`lsr #0x10` into an `unsigned short` local is a `(short)` read of a u16 field:
   `value = (short)p->field;`. The plain read emits a predicated `ldrh` and the function comes out
   12 bytes short (`02155d54`).
+- a flag passed to a `bool` parameter is a `bool` local; an `int` converted at the call costs
+  OVERGEN 16 (`ov005:021589f4`).
 - Keep a packed value in an `int` local so only the genuinely narrow call site pays for the
   truncation; typing the local `unsigned short` emits `lsl`/`lsr #0x10` at every use (`020307d0`).
 - three separate `and rX,sl,#0xff` for ONE integer argument are per-call implicit conversions to an
@@ -892,6 +907,11 @@ register rewrite and no colorsweep run can touch it. Fix the frame FIRST, and me
 It prints both frame sizes, every stack slot each side touches, and the first rank where the two
 lists diverge -- everything below that rank agrees, so the object just under it is the one whose
 size is wrong.
+
+Every local 0xc too high with an `ldm`/`stm` copy from the lowest slot is a struct RETURNED BY
+VALUE: declare the out-pointer callee `extern "C"` under its mangled name returning the `Vec3` and
+write `Vec3 to = Select(entry);`. The result lands in a compiler temp at the bottom of the frame
+and is copied into the named local (`021b8e8c`).
 
 A `#pragma opt_common_subs off` or `#pragma opt_dead_assignments off` in your file is a SIZE bug
 waiting to be counted, not a lever: it keeps a store the ROM folded away and blocks a reload the ROM
@@ -1000,7 +1020,9 @@ fields, including parameters) and it has been run on your starting artifact befo
 built. Reach for these by hand only when the shape below is one the rules cannot express.
 `volatile` also PINS LOAD ORDER, not just reloads: plain locals let mwcc sink each load to its
 first use and reorder them into use order, where volatile keeps declaration order (`0215b138`,
-two `ldrsh` field reads, 4 bytes).
+two `ldrsh` field reads, 4 bytes). A single-use field read is forward-substituted to its use; a
+`volatile` member read into a local above the test (`u8 threshold = w->threshold_;`) loads it
+first, and the same on two int members puts the int loads ahead of a float load (`021edf54`).
 **A CACHED LOCAL IS A CLAIM THAT NOTHING IN BETWEEN WROTE THAT MEMORY, and the ROM rarely makes it.**
 Re-read instead of caching whenever calls sit between the two uses: a field after three mutating
 calls (`02184bbc`, the target's second `add`/`ldrsb` pair), a predicate the function has itself been
@@ -1048,7 +1070,7 @@ When the target RE-LOADS a value you are holding in a register:
   `unsigned int` even when discarded; declared `void`, the scheduler reorders (`ov017:0218b688`).
 - A byte store through a pointer loaded from a struct slot that takes the swapped scratch pair is a
   typed accessor plus an inline member setter: `GetBattleHud(res)->SetVisible(1)`, not
-  `*((u8*)res->ptr + 0xa) = 1` (`ov017:021acdf4`).
+  `*((u8*)res->ptr + 0xa) = 1` (`ov017:021acdf4`, `ov017:021b790c`).
 - A register copied to the stack TWICE and then reloaded (`str r1, [sp, #4] ; ldr r3, [sp, #4] ;
   str r3, [sp, #8]`) before bitfield reads is an inline returning the register struct by value:
   `static inline GXDispCnt GX_GetDispCnt(void) { return *(volatile GXDispCnt*)&DISPCNT; }`. Without
@@ -1241,10 +1263,16 @@ together. A switch arm that does only what "no arm" does should not be written.
   diff means the SOURCE has the wrong operator, not the wrong colouring (`020cddec`).
 - **block the range fold** (`0205337c`): an `||`-chain of equality tests written as
   `!(a != x && a != y && a != z)` stops mwcc lowering it to `(unsigned)(a-x) <= 2` and forces real
-  cmp/cmpne/cmpne/bne with a non-predicated then-block.
+  cmp/cmpne/cmpne/bne with a non-predicated then-block. For two ADJACENT constants with the field
+  bound to a local, `s == 0x54 || s == 0x55` becomes `sub`, a shift pair, `cmp #1` and `ls`-
+  predicated stores (OVERGEN 20); reading the field at each compare keeps the two `cmp` (`02160f4c`).
 - **a chain that opens with `cmpne` right after a `beq` on the same value** repeats the test the
   branch above already decided: `if (s == 0) {...} else if (s != 0 && s != 1 && s != 2)`. Without
   the redundant `s != 0` the chain opens with a plain `cmp` (`021dbf04`).
+- **a null test on a member's address** (`add`, `adds`, `ldrbne`, `cmpne`, `bne`): bind
+  `Task* task = &ctx->task;` and write `!(task != 0 && task->active != 0)` in the condition. An
+  int-returning inline materialises `movne`/`moveq`/`cmp`, and an unbound `&ctx->task` re-adds the
+  base (`0215e69c`).
 - **backward `goto` into a label** reproduces mwcc's tail-merge of a duplicated reset block
   (`02002b90`).
 - **EARLY RETURN vs SINGLE EXIT decides WHERE a returned constant is materialised — both directions

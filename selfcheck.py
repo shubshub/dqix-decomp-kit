@@ -79,7 +79,7 @@ def _pr_hook():
 @check("every landing ports what it matched to the other regions",
        "matches landed in config/usa only, so EUR fell 577 files behind and JPN never moved")
 def _regionsync():
-    missing = [s for s in ("finish_wave.sh", "integrate_fast.sh") if "regionsync.py" not in read(f"{KIT}/{s}")]
+    missing = [s for s in ("finish_wave.sh", "integrate_fast.sh", "landpr.py") if "regionsync" not in read(f"{KIT}/{s}")]
     return f"{', '.join(missing)} never runs regionsync.py" if missing else None
 
 
@@ -462,25 +462,13 @@ def _all_parse():
             ast.parse(read(f))
         except SyntaxError as e:
             bad.append(f"{os.path.basename(f)}:{e.lineno}")
-    # `bash` on this box resolves to WSL's bash for a native-Windows Python, and WSL cannot see a
-    # C:/ path -- every shell script then reports "does not parse". Use Git Bash explicitly, and if
-    # no usable bash exists, check only the Python files rather than emit 18 false failures.
-    shell = None
-    for cand in (r"C:\Program Files\Git\bin\bash.exe", r"C:\Program Files\Git\usr\bin\bash.exe", "bash"):
-        try:
-            probe = subprocess.run([cand, "-n", f"{KIT}/selfcheck.py"], capture_output=True, text=True)
-            if "No such file or directory" not in (probe.stderr or ""):
-                shell = cand
-                break
-        except OSError:
+    shell, env = _kp.bash()
+    for f in _g.glob(f"{KIT}/*.sh"):
+        if os.path.basename(f).startswith("_"):
             continue
-    if shell:
-        for f in _g.glob(f"{KIT}/*.sh"):
-            if os.path.basename(f).startswith("_"):
-                continue
-            r = subprocess.run([shell, "-n", f], capture_output=True, text=True)
-            if r.returncode != 0:
-                bad.append(os.path.basename(f))
+        r = subprocess.run([shell, "-n", f], capture_output=True, text=True, env=env)
+        if r.returncode != 0:
+            bad.append(os.path.basename(f))
     return f"{len(bad)} script(s) do not parse: {bad[:5]}" if bad else None
 
 
@@ -1063,12 +1051,9 @@ def _fullstop_sees_watchers():
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
         time.sleep(1.5)
-        # a bare "bash" resolves to WSL's, which cannot see the Windows filesystem paths we pass
-        sh = "C:/Program Files/Git/bin/bash.exe"
-        if not os.path.exists(sh):
-            sh = "bash"
+        sh, env = _kp.bash()
         out = subprocess.run([sh, f"{KIT}/fullstop.sh", "--dry"],
-                             capture_output=True, text=True, timeout=180).stdout
+                             capture_output=True, text=True, timeout=180, env=env).stdout
         tier3 = out.split("TIER 3")[-1]
         if "none running" in tier3 or "watcher process(es)" not in tier3:
             return "fullstop --dry reports no watchers while a decoy tail on wlog/ is live"
