@@ -427,8 +427,6 @@ LOWER number, so an unreachable rank is usually a missing or unwanted coalesce:
 `pad/renum/forcemerge.py <src> <mod> <addr> <size> A:B` tests one, `stagedump.py` shows the IR.
 Write a loop base as a plain expression inside the address, not a variable or helper
 (`(Elem*)(lists + 0x8000) + j`, `021e0638`).
-The mirror, when that fold is the bug: form the pointer one element past the object and read
-`(list - 1)->field`, so the object's address stays a separate add (`02164d14`).
 A counter that ignores declaration order was renumbered below every local by common-subexpression
 elimination re-reading a dominated `ids.v[i]`: type the counters and the count `long` (SDK `s32`)
 so the conversion is not merged (`0215d63c`, 185 -> 0). A leftover `cmp a; cmpne b` is operand
