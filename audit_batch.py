@@ -28,6 +28,7 @@ import kitpaths as _kp
 import argparse
 import os
 import re
+import shutil
 import subprocess
 import sys
 import urllib.error
@@ -58,21 +59,60 @@ def norm(addr):
 
 
 def _get(url):
+    """GET a GitHub API path, as JSON. None when it cannot be read -- never a guess.
+
+    `gh api` first when it is authenticated: the unauthenticated API allows 60 requests an HOUR PER
+    IP, and an audit issues a dozen calls, so several swarms sharing a machine exhaust it in minutes
+    and every audit after that fails. With a token the limit is 5,000 an hour and shared per account,
+    which is what several swarms on one login actually need.
+    """
+    path = url[len(API):]
+    gh = shutil.which("gh")
+    if gh and _gh_authed(gh):
+        r = subprocess.run([gh, "api", "-H", "Accept: application/vnd.github+json", path],
+                           capture_output=True, text=True, timeout=60)
+        if r.returncode == 0:
+            try:
+                return json.loads(r.stdout)
+            except ValueError:
+                pass
+        if "rate limit" in (r.stderr or "").lower():
+            print("note  GitHub API rate limit reached; issue and PR checks are INCOMPLETE, not clean",
+                  file=sys.stderr)
+            return None
     req = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json",
                                                "User-Agent": "dqix-audit_batch"})
     try:
         with urllib.request.urlopen(req, timeout=30) as r:
             return json.load(r)
     except urllib.error.HTTPError as e:
-        if e.code == 403 and "rate limit" in (e.headers.get("X-RateLimit-Remaining") or "0"):
+        # A rate-limited response is 403 with X-RateLimit-Remaining: 0. Testing the header for the
+        # word "rate limit" can never match it -- the header holds a number -- so the first version of
+        # this raised on the one failure it existed to survive.
+        if e.code in (403, 429) and e.headers.get("X-RateLimit-Remaining") == "0":
             print("note  GitHub API rate limit reached; issue and PR checks are INCOMPLETE, not clean",
                   file=sys.stderr)
+            return None
+        if e.code == 403:
+            print(f"note  GitHub refused the request (403): {e.reason}; issue and PR checks are "
+                  "INCOMPLETE, not clean", file=sys.stderr)
             return None
         raise
     except urllib.error.URLError as e:
         print(f"note  cannot reach GitHub ({e.reason}); issue and PR checks are INCOMPLETE, not clean",
               file=sys.stderr)
         return None
+
+
+_GH_AUTHED = None
+
+
+def _gh_authed(gh):
+    global _GH_AUTHED
+    if _GH_AUTHED is None:
+        _GH_AUTHED = subprocess.run([gh, "auth", "status"], capture_output=True,
+                                    text=True, timeout=30).returncode == 0
+    return _GH_AUTHED
 
 
 def open_issues():
