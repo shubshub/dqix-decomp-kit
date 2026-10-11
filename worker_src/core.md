@@ -1329,6 +1329,11 @@ and `func_020a1bb4`, no callee-saved copy) means the ID is POINTER-typed. `OVERL
 constant, it rematerialises it. Declare the callee `func_020a1940(unsigned int* id)` in that file
 and pass `&OVERLAY_19_ID`. Eight load/unload pairs, 36 bytes (`main:02000c9c`).
 
+**A pool word at a section boundary is an LCF symbol too.** The arm9 LCF defines
+`ARM9_<TEXT|INIT|RODATA|CTOR|DATA>_START`/`_END`. The static-initializer walk takes
+`extern "C" void (*ARM9_CTOR_START[])(void);`. The literal `0x020eeb18` passes USA only with its
+`relocs.txt` entry set to `module:none`, and fails EUR, whose table is 0x10 later (`0200edc8`).
+
 ## RELOCS — an array-indexed base needs its OWN extern symbol
 `&data_02107870[i]` fails the reloc check: mwcc addend relocs resolve back to the base symbol. Each
 argument needed its own extern (`data_021078a8`, `data_021078e0`) while the array-indexed STORE base
