@@ -1220,6 +1220,9 @@ together. A switch arm that does only what "no arm" does should not be written.
 - **block the range fold** (`0205337c`): an `||`-chain of equality tests written as
   `!(a != x && a != y && a != z)` stops mwcc lowering it to `(unsigned)(a-x) <= 2` and forces real
   cmp/cmpne/cmpne/bne with a non-predicated then-block.
+- **a chain that opens with `cmpne` right after a `beq` on the same value** repeats the test the
+  branch above already decided: `if (s == 0) {...} else if (s != 0 && s != 1 && s != 2)`. Without
+  the redundant `s != 0` the chain opens with a plain `cmp` (`021dbf04`).
 - **backward `goto` into a label** reproduces mwcc's tail-merge of a duplicated reset block
   (`02002b90`).
 - **EARLY RETURN vs SINGLE EXIT decides WHERE a returned constant is materialised — both directions
