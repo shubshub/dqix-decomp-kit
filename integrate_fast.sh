@@ -27,6 +27,10 @@ export DQIX_REPO="$REPO"
 _final() { local rc=$?; wave_lock_release; echo "$(date '+%H:%M') INTEGRATE-END rc=$rc" | tee -a "$LOG"; }
 trap _final EXIT
 cd "$REPO" || exit 2
+sha1_ok() {
+  [ -f arm7_bios.bin ] || { echo "$(date '+%H:%M') sha1 skipped: no arm7_bios.bin" >> "$LOG"; return 0; }
+  ninja sha1 2>&1 | grep -q "OK"
+}
 REGION="$(python "$KIT/buildcfg.py" --region)" || exit 2
 REGION_TAG="${REGION^^}"
 
@@ -160,7 +164,7 @@ python tools/configure.py "$REGION" --no-extract "${_compiler_args[@]}" >> "$LOG
 echo "$(date '+%H:%M') wired $placed modules, configured, building once" >> "$LOG"
 
 green=0
-if ninja check >/tmp/if_check.log 2>&1 && ninja sha1 2>&1 | grep -q "OK"; then green=1; fi
+if ninja check >/tmp/if_check.log 2>&1 && sha1_ok; then green=1; fi
 
 landed=$(tail -n +$((_mark + 1)) "$LOG" | sed -n 's/^integrated \([0-9]*\);.*/\1/p' \
          | awk '{s += $1} END {print s + 0}')
@@ -174,8 +178,11 @@ if [ "$green" = "1" ]; then
     git clean -fdq src/ >> "$LOG" 2>&1
     exit 0
   fi
+  ninja objdiff.json >> "$LOG" 2>&1
   python "$KIT/countfix.py" >> "$LOG" 2>&1
-  if [ $? -eq 3 ] && ! { ninja check >/tmp/if_countfix.log 2>&1 && ninja sha1 2>&1 | grep -q "OK"; }; then
+  _cf=$?
+  [ "$_cf" -ne 0 ] && [ "$_cf" -ne 3 ] && echo "$(date '+%H:%M') WARN countfix failed (exit $_cf): landed function counts were not corrected" | tee -a "$LOG"
+  if [ "$_cf" -eq 3 ] && ! { ninja check >/tmp/if_countfix.log 2>&1 && sha1_ok; }; then
     python "$KIT/countfix.py" --restore >> "$LOG" 2>&1
     ninja check >/dev/null 2>&1
   fi

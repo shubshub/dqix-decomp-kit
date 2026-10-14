@@ -51,7 +51,7 @@ last_sweep=$SECONDS
 last_state=0                      # 0, not $SECONDS: write STATE.md on the very first loop
 last_claimed=""
 sweep_pid=""
-update_wait=""; update_blocked=""; last_kitcheck=$((SECONDS - 600))
+update_wait=""; update_blocked=""; last_kitcheck=$((SECONDS - 600)); claim_refused=""
 rm -f "$SP/claims/UPDATE_WAITING"
 
 while :; do
@@ -104,7 +104,8 @@ while :; do
     echo "$(date '+%H:%M') blocker class addressed -- claiming resumed" >> "$LOG"; blocker_held=""
   fi
 
-  if [ -z "$update_wait" ] && [ -z "$update_blocked" ] && [ $((SECONDS - last_kitcheck)) -ge 600 ]; then
+  if [ -z "$update_wait" ] && { [ -z "$update_blocked" ] || [ $((SECONDS - update_blocked)) -ge 900 ]; } \
+     && [ $((SECONDS - last_kitcheck)) -ge 600 ]; then
     last_kitcheck=$SECONDS
     _behind=$(python "$KIT/kitpaths.py" behind 2>/dev/null | tr -dc '0-9')
     if [ "${_behind:-0}" -gt 0 ]; then
@@ -118,7 +119,13 @@ while :; do
   for ((s=1; s<=SLOTS; s++)); do
     [ -n "$hold_claims" ] && break
     [ -n "${slot_pid[$s]}" ] && continue
-    MOD=$(python "$KIT/claim.py" --best 2>/dev/null | tr -d '\r\n ')
+    MOD=$(python "$KIT/claim.py" --best 2>/dev/null); _rc=$?
+    MOD=$(printf '%s' "$MOD" | tr -d '\r\n ')
+    if [ "$_rc" -ne 0 ]; then
+      [ -n "$claim_refused" ] || echo "$(date '+%H:%M') claim.py refused (exit $_rc) -- retrying, pools not drained" >> "$LOG"
+      claim_refused=1; break
+    fi
+    claim_refused=""
     if [ -z "$MOD" ]; then
       echo "$(date '+%H:%M') every pool drained -- nothing left to claim" >> "$LOG"
       touch "$SP/STOP_PULL"; break
@@ -178,7 +185,7 @@ while :; do
   # an operator remembering. Skipped while an integration holds the wave lock: both want the tree.
   if [ -n "$sweep_pid" ] && ! kill -0 "$sweep_pid" 2>/dev/null; then sweep_pid=""; fi
   if [ "$SWEEP_EVERY" -gt 0 ] && [ -z "$sweep_pid" ] && [ -z "$integ_pid" ] && [ -z "$update_wait" ] \
-     && [ $((SECONDS - last_sweep)) -ge "$SWEEP_EVERY" ]; then
+     && [ "${_behind:-0}" -eq 0 ] && [ $((SECONDS - last_sweep)) -ge "$SWEEP_EVERY" ]; then
     last_sweep=$SECONDS
     echo "$(date '+%H:%M') repair sweep (detached)" >> "$LOG"
     python -u "$KIT/repairsweep.py" >> "$SP/wlog/repairsweep_auto.log" 2>&1 &
@@ -208,7 +215,7 @@ while :; do
          rm -f "$SP/claims/UPDATE_WAITING"
          exec bash "$KIT/pull_all.sh" ;;
       3) echo "$(date '+%H:%M') KIT UPDATE BLOCKED by local kit changes -- running on, fix with kit_update.py" >> "$LOG"
-         update_blocked=1 ;;
+         update_blocked=$SECONDS ;;
     esac
     update_wait=""; rm -f "$SP/claims/UPDATE_WAITING"
   fi

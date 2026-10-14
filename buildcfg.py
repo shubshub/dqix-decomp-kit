@@ -62,7 +62,7 @@ DECOMP_ME_COMPILER = _cfg.DECOMP_ME_COMPILER
 COMPILER_ROOT = os.path.normpath(os.path.join(REPO, str(_cfg.mwcc_root)))
 CC = f"{COMPILER_ROOT}/{MWCC_VERSION}/mwccarm.exe"
 AS = f"{COMPILER_ROOT}/{MWCC_VERSION}/mwasmarm.exe"
-AS_FLAGS = _cfg.AS_FLAGS.split()
+AS_FLAGS = getattr(_cfg, "AS_FLAGS", "-proc arm5TE").split()
 FLAGS = (_cfg.CC_FLAGS + " " + _cfg.CC_INCLUDES + " " + _mwcc_defines(_cfg)).split()
 from pragmas import CODEGEN_PRAGMA
 
@@ -83,11 +83,42 @@ SDK_LCF_SYMBOLS = {"SDK_IRQ_STACKSIZE": 0x400, "SDK_SYS_STACKSIZE": 0}
 
 def lcf_symbols():
     overlays = [d for d in os.listdir(f"{REPO}/{config_dir('main')}/overlays") if re.fullmatch(r"ov\d+", d)]
-    return {**SDK_LCF_SYMBOLS, **{f"OVERLAY_{int(d[2:])}_ID": int(d[2:]) for d in overlays}}
+    out = {**SDK_LCF_SYMBOLS, **{f"OVERLAY_{int(d[2:])}_ID": int(d[2:]) for d in overlays}}
+    head = open(f"{REPO}/{config_dir('main')}/delinks.txt", encoding="utf-8").read().split("\n\n")[0]
+    for name, lo, hi in re.findall(r"(?m)^\s*\.(\w+)\s+start:0x([0-9a-fA-F]+)\s+end:0x([0-9a-fA-F]+)", head):
+        out[f"ARM9_{name.upper()}_START"] = int(lo, 16)
+        out[f"ARM9_{name.upper()}_END"] = int(hi, 16)
+    return out
 
 
 def cc_path(version):
     return f"{COMPILER_ROOT}/{version}/mwccarm.exe" if version else CC
+
+
+_POSTCOMPILE = []
+
+
+def postcompile(obj):
+    if not _POSTCOMPILE:
+        path = os.path.join(_TOOLS, "mwcc.py")
+        if os.path.exists(path):
+            import importlib.util
+            spec = importlib.util.spec_from_file_location("_decomp_mwcc", path)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            _POSTCOMPILE.append(module.strip)
+        else:
+            _POSTCOMPILE.append(lambda _obj: [])
+    return _POSTCOMPILE[0](obj)
+
+
+def sections(elf, name):
+    return [(i, s) for i, s in enumerate(elf.iter_sections()) if s.name == name and s["sh_size"]]
+
+
+def relocations(elf, index):
+    return [s for s in elf.iter_sections()
+            if s.header["sh_type"] in ("SHT_REL", "SHT_RELA") and s.header["sh_info"] == index]
 
 
 def tool_command(executable):

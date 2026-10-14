@@ -28,6 +28,7 @@ r = subprocess.run(buildcfg.tool_command(buildcfg.CC) + list(buildcfg.FLAGS) + [
                    capture_output=True, text=True)
 if r.returncode:
     sys.exit("COMPILE " + (r.stdout + r.stderr)[-1500:])
+buildcfg.postcompile(obj)
 with open(obj, "rb") as fh:
     elf = ELFFile(fh)
     secs = list(elf.iter_sections())

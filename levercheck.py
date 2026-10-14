@@ -13,7 +13,7 @@ TSV = os.environ.get("LEVERCHECK_TSV", f"{SP}/wlog/levers.tsv")
 
 def doc_paths(kit=None):
     if kit is None and os.environ.get("LEVERCHECK_DOCS"):
-        return [p for p in os.environ["LEVERCHECK_DOCS"].split(os.pathsep) if p]
+        return [os.path.normpath(os.path.join(KIT, p)) for p in os.environ["LEVERCHECK_DOCS"].split(os.pathsep) if p]
     root = kit or KIT
     return [os.path.join(root, "worker_src", "core.md"), os.path.join(root, "worker_src", "deadends.md")]
 

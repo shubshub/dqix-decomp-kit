@@ -264,7 +264,10 @@ holding the loop instead of the main thread, and it needs the user's word before
 
 Then arm two monitors and one background watcher, so the work wakes you instead of you polling:
 
-    Monitor:          tail -n0 -F $SP/wlog/pull_*_s*.log | grep -E --line-buffered " (MATCH|miss|SKIP|recycle|WARN) "
+    Monitor:          tail -n0 -F $SP/wlog/pull_all.log $SP/wlog/pull_{main,{000..034}}_s{1..9}.log 2>/dev/null | grep -E --line-buffered " (MATCH|miss|SKIP|recycle|WARN) |HOLDING"
+
+A `HOLDING` line means a lever is waiting for you: promote it (or decline it) right away, because
+no worker claims until you do.
     Monitor:          bash $KIT/health.sh
     Background Bash:  bash $KIT/leverwatch.sh --once     (re-arm after it fires; never under Monitor)
 

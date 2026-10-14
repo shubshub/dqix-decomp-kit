@@ -164,7 +164,7 @@ the context.
     python colorsweep.py $M $A "$F" [--depth N] [--budget N] [--apply]
 
 A beam hill-climb over meaning-preserving rewrites (operand swaps, compound-assignment flips,
-declaration moves, statement swaps, pointer round-trips, duplicate pool literals, ...), each
+declaration moves, statement swaps, field re-reads, ...), each
 scored by `wdiff.py`. Defaults: depth 3, budget 80 compiles. `--apply` writes the best improvement
 back to the file. Exit 0 = MATCH, 2 = improved or unchanged, 1 = the base does not compile. Run it
 after each new form you write, not repeatedly on the same one.

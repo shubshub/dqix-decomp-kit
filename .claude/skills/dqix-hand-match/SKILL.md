@@ -66,7 +66,7 @@ Fetch the exact recipe rather than reasoning from memory:
 | `UNDEF-SYM` on a name that looks correct | the ROM symbol is MANGLED and your prototype says `extern "C"`. Drop the keyword. `wgate` checks UNDEF-SYM before RELOC-WRONG, so this one fault hides every later verdict — the file can already be byte-exact |
 | callee-saved register order wrong | they are allocated in **reverse definition order**; register class is irrelevant |
 | target branches where you emit straight-line code | change the control-flow shape (`core.md`: CONTROL-FLOW SHAPE). `#pragma optimize_for_size on` only as a diagnosis — `wgate` refuses any codegen pragma. If the TARGET is the predicated one, remove whatever made yours branch |
-| target holds a constant you re-materialize | the pointer round-trip or an inline accessor (`core.md`: PREFER THE POINTER ROUND-TRIP TO `opt_propagation off`); the pragma is a diagnosis only |
+| target holds a constant you re-materialize | a plain local or an inline accessor (`core.md`: ROUTE A FOLDED `&global` THROUGH A PLAIN LOCAL); the pragma is a diagnosis only |
 | target re-loads what you keep in a register | re-read it at the second use or read it through an accessor (`core.md`: `opt_common_subs off` closes it); the pragma is a diagnosis only |
 | spill/temp mismatch | named local vs CSE temp; type width is a regalloc lever, and byte-param coercion beats source casts |
 | block order differs | control-flow shape: if/else-if chains, tail sharing, diamond order |

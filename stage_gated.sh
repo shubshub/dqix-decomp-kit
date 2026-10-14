@@ -32,6 +32,10 @@ for f in "$SP"/gated/*/*.cpp; do
   if ! grep -qx "$a" "$Q"; then
     skip=$((skip + 1)); continue
   fi
+  if ! grep -qi "^$a " "$KIT/asm_allow.txt" \
+     && grep -qE '^[[:space:]]*asm\b|\basm[[:space:]]+(void|int|unsigned|char|long|short)\b' "$f"; then
+    skip=$((skip + 1)); continue
+  fi
   d=$(basename "$(dirname "$f")")          # main | ov017
   n=$((n + 1))
   [ "$APPLY" = 1 ] && { mkdir -p "$SP/staging/$d"; cp "$f" "$SP/staging/$d/$a.cpp"; }

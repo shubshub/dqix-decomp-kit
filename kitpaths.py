@@ -68,6 +68,17 @@ KIT_URL = os.environ.get("DQIX_KIT_URL", "https://github.com/ZevyaDev/dqix-decom
 KIT_BRANCH = os.environ.get("DQIX_KIT_BRANCH", "main")
 DECOMP_URL = os.environ.get("DQIX_DECOMP_URL", "https://github.com/ZevyaDev/dqix-decomp.git")
 DECOMP_BRANCH = os.environ.get("DQIX_DECOMP_BRANCH", "decomp-matching")
+
+
+def module_label(mod):
+    m = str(mod).strip()
+    if m == "main":
+        return "main"
+    if m.isdigit():
+        return "ov%03d" % int(m)
+    if m[:2].lower() == "ov" and m[2:].isdigit():
+        return "ov%03d" % int(m[2:])
+    return m
 BUSY = ("pull_all.pid", "wave.lock", "claims/INTEGRATING")
 FRESH_EVERY = 600
 

@@ -8,7 +8,7 @@ import sys
 sys.path.insert(0, (_kp.KIT + "/frida"))
 import colorforce as cf  # noqa: E402
 
-src, mod, addr, size, pool_from = sys.argv[1], sys.argv[2], int(sys.argv[3], 16), int(sys.argv[4], 0), int(sys.argv[5], 16)
+src, mod, addr, size, pool_from = sys.argv[1], _kp.module_label(sys.argv[2]), int(sys.argv[3], 16), int(sys.argv[4], 0), int(sys.argv[5], 16)
 cfg = json.loads(sys.argv[6])
 cfg.setdefault("call", -1)
 cfg.setdefault("kind", "multi")

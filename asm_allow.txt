@@ -33,15 +33,92 @@
 # NitroSDK fixed-point matrix routines the SDK itself ships as assembly. Verified against
 # refs/SonicRushAdventure-Decomp/lib/NitroSDK/src/fx/fx_mtx33.c and fx_mtx43.c, which define all
 # three as `asm void`, instruction for instruction the same as ours.
-#
-# NOT allowlisted, deliberately: 020ca594 VectorizedMemset and 020ca650 VectorizedInvertedMemcpy.
-# Their own headers say the reference decomp's assembly does not assemble to these bytes, so they
-# are ROM transcriptions rather than reference source, and they go back to workers for a C form.
 020c1180  MTX_Identity33_                   NitroSDK ships it as asm (SonicRush fx_mtx33.c:18)
 020c1840  MTX_Identity43_                   NitroSDK ships it as asm (SonicRush fx_mtx43.c:18)
 020c1868  MTX_Copy43To44_                   NitroSDK ships it as asm (SonicRush fx_mtx43.c:35)
+020c197c  MTX_RotX43_                       NitroSDK ships it as asm (pokediamond FX_mtx43.c:169)
 020c6938  GX_SendFifo64B                    NitroSDK ships it as asm (SonicRush gxasm.c:24)
 0200cd1c  _ll_mod                           CW runtime asm: pushes ip, branches into _ll_sdiv; asm in every ref (SonicRush msl.s)
 020c98f0  ResetSystemAndBoot020c98f0       NitroSDK OS_ResetSystem tail is inline asm: mov sp to the IRQ stack bottom, bl into ITCM; mov sp has no C form
 020c8bd4  func_020c8bd4                    NitroSDK OSi_DisplayExContext wraps its handler call in inline asm: mrs/msr cpsr, mov sp, ldr lr,=label (pokeheartgold os_exception.c:123)
 0200ae40  _d2f                             CW runtime soft-float, hand-written asm: andseq, cmn+bhs, subs+bls and an unfolded mov #0xff000000 have no C form (pokediamond RUNTIME_d_dtof.s)
+0200d8a8  func_0200d8a8                    MSL semihosting SYS_READC (mov r0,#7; swi 0x123456): a swi has no C form; neighbours func_0200d894 and sys_exit 0200d8bc are delinked as the same asm
+020ca7e0  _Z10AtomicSwapiPi                  swp has no C form (SonicRushAdventure-Decomp/mi_swap.c 100%)
+020c8b30  _Z28CallFunc020c8b44Then020c8bd4Pv NitroSDK OSi_GetAndDisplayContext: push r0/lr, two bl, pop, bx lr (pokediamond OS_exception.c, asm)
+020c9a4c  _Z17CountLeadingZerosj             hand asm (SonicRushAdventure-Decomp/os_vramExclusive.c 100%)
+020001c0  CpuSet                             swi has no C form (khdays-decomp/CpuSet.c 100%)
+020c8a08  _Z24DisableSystemControlBit0v      mcr/mrc has no C form (SonicRushAdventure-Decomp/os_protectionRegion.c 100%)
+020c89d4  _Z13EnableDataTcmv                 mcr/mrc has no C form (SonicRushAdventure-Decomp/os_protectionRegion.c 100%)
+020c89c4  _Z20EnableInstructionTcmv          mcr/mrc has no C form (SonicRushAdventure-Decomp/os_protectionRegion.c 100%)
+020c89f8  _Z23EnableSystemControlBit0v       mcr/mrc has no C form (SonicRushAdventure-Decomp/os_protectionRegion.c 100%)
+020c6914  func_020c6914                      hand asm (SonicRushAdventure-Decomp/gxasm.c 100%)
+020c89e4  _Z20GetDataTcmRegionBasev          mrc has no C form
+0200056c  Halt                               swi has no C form (khdays-decomp/Halt.c 100%)
+0200062c  HuffUnCompReadByCallback           swi has no C form (khdays-decomp/HuffUnCompReadByCallback.c 100%)
+020c21dc  Mat4x4_WriteIdentity               hand asm (SonicRushAdventure-Decomp/fx_mtx44.c 100%)
+020c7cb0  _Z26InitializeContextRegistersP16ProcessorContextjj hand asm (pmd-sky/os_context.c 100%)
+020004ec  IntrWait                           swi has no C form (khdays-decomp/IntrWait.c 100%)
+020000d4  IsDebugger                         swi has no C form (khdays-decomp/IsDebugger.c 100%)
+020002cc  LZ77UnCompReadByCallbackWrite16bit swi has no C form (khdays-decomp/LZ77UnCompReadByCallbackWrite16bit.c 100%)
+02000140  LZ77UnCompReadNormalWrite8bit      swi has no C form (khdays-decomp/LZ77UnCompReadNormalWrite8bit.c 100%)
+020c2208  Mat4x4_ConvertTo4x3                hand asm (SonicRushAdventure-Decomp/fx_mtx44.c 100%)
+020c7d80  RestoreContext                     mrs/msr has no C form (sm64ds-decomp/ARMRestoreContext.c 82%)
+020c7d34  SaveContext                        mrs/msr has no C form (SonicRushAdventure-Decomp/os_context.c 84%)
+020c8a2c  _Z20SetProtectionRegion1j          mcr has no C form (SonicRushAdventure-Decomp/os_protectionRegion.c 100%)
+020c8a34  _Z20SetProtectionRegion2j          mcr has no C form (SonicRushAdventure-Decomp/os_protectionRegion.c 100%)
+020c8a18  _Z26UpdateDataAccessPermissionjj   mcr/mrc has no C form (SonicRushAdventure-Decomp/os_protectionRegion.c 100%)
+020c9bf0  func_020c9bf0                      mcr has no C form (SonicRushAdventure-Decomp/os_cache.c 100%)
+020c8348  _Z17WaitForVCountZerov             hand asm (khdays-decomp/OSi_CancelDma0.c 100%)
+020c56dc  _Z20WriteGXFifoZeroBurstPVv        hand asm (pokediamond/GX_g3x.c 100%)
+0200bf68  _fgeq                              mrs/msr has no C form
+0200bfc4  _fgr                               mrs/msr has no C form
+0200c020  _fleq                              mrs/msr has no C form
+0200c088  _fls                               mrs/msr has no C form
+0200cd2c  _ll_sdiv                           CW runtime long division, asm in every ref with its _ll_mod entry point (SonicRush msl.s; sm64ds _ll_sdiv.c 94%)
+0200cf44  _s32_div_f                         CW runtime division, hand asm (sm64ds _s32_div_f.c 100%)
+0200d150  _u32_div_f                         CW runtime division, hand asm (sm64ds _u32_div_f.c 100%)
+0200bc78  func_0200bc78                      mrs/msr has no C form
+0200bd10  func_0200bd10                      mrs/msr has no C form
+0200be50  _deq                               mrs/msr has no C form
+0200bedc  func_0200bedc                      mrs/msr has no C form
+0200d894  func_0200d894                      swi has no C form
+0200f31c  func_0200f31c                      runtime register save into a 0x70-byte frame, hand asm (sm64ds func_020717c0.c 100%)
+020c8b44  func_020c8b44                      mrs/msr has no C form (pokeheartgold/os_exception.c 97%)
+020c976c  func_020c976c                      hand asm (SonicRushAdventure-Decomp/os_system.c 100%)
+020ca50c  func_020ca50c                      hand asm (SonicRushAdventure-Decomp/mi_memory.c 100%)
+020ca528  func_020ca528                      hand asm (SonicRushAdventure-Decomp/mi_memory.c 100%)
+020ca544  func_020ca544                      hand asm (SonicRushAdventure-Decomp/gxasm.c 100%)
+020ca568  func_020ca568                      hand asm (SonicRushAdventure-Decomp/mi_memory.c 100%)
+020ca7e8  func_020ca7e8                      swpb has no C form (pmd-sky/mi_uncompress.c 91%)
+0200d8bc  func_0200d8bc                      swi has no C form (sm64ds-decomp/func_0207199c.c 100%)
+0220db64  _Z26CountLeadingZeros_0220db64j    hand asm (SonicRushAdventure-Decomp/os_vramExclusive.c 100%)
+020c96e8  _Z19EnableIRQInterruptsv           mrs/msr has no C form (SonicRushAdventure-Decomp/os_system.c 100%)
+020c96fc  _Z20DisableIRQInterruptsv          mrs/msr has no C form (SonicRushAdventure-Decomp/os_system.c 100%)
+020c9710  _Z20SetIRQInterruptStatei          mrs/msr has no C form (SonicRushAdventure-Decomp/os_system.c 100%)
+020c9728  _Z26DisableIRQAndFIQInterruptsv    mrs/msr has no C form (SonicRushAdventure-Decomp/os_system.c 100%)
+020c973c  _Z26SetIRQAndFIQInterruptStatei    mrs/msr has no C form (SonicRushAdventure-Decomp/os_system.c 100%)
+020c9754  _Z20GetIRQInterruptStatev          mrs has no C form (SonicRushAdventure-Decomp/os_system.c 100%)
+020c9760  _Z16GetProcessorModev              mrs has no C form (SonicRushAdventure-Decomp/os_system.c 100%)
+020c824c  _Z19InvalidateDataCachev           mcr has no C form (SonicRushAdventure-Decomp/os_cache.c 100%)
+020c8258  _Z14CleanDataCachev                mcr has no C form (SonicRushAdventure-Decomp/os_cache.c 100%)
+020c8284  _Z24CleanInvalidateDataCachev      mcr has no C form (SonicRushAdventure-Decomp/os_cache.c 100%)
+020c82b8  _Z24InvalidateDataCacheRangePKvj   mcr has no C form (SonicRushAdventure-Decomp/os_cache.c 100%)
+020c82d4  _Z15CleanCacheRangePKvj            mcr has no C form (SonicRushAdventure-Decomp/os_cache.c 100%)
+020c82f0  _Z25CleanInvalidateCacheRangePKvj  mcr has no C form (SonicRushAdventure-Decomp/os_cache.c 100%)
+020c8314  _Z16DrainWriteBufferv              mcr has no C form (SonicRushAdventure-Decomp/os_cache.c 100%)
+020c8320  _Z26InvalidateInstructionCachev    mcr has no C form (SonicRushAdventure-Decomp/os_cache.c 100%)
+020c832c  _Z31InvalidateInstructionCacheRangePKvj mcr has no C form (SonicRushAdventure-Decomp/os_cache.c 100%)
+020c6fb4  ReleaseGBABus                      NitroSDK OS_UnLockCartridge-style tail jump ldr r1,=f; bx r1, asm in the SDK (pokediamond OS_spinLock.c)
+020c7078  leadZeroCount                      inline clz: this compiler has no CLZ intrinsic, the SDK writes it as asm (khdays OsCountZeroBits)
+020b1ec0  Clz                                inline clz: this compiler has no CLZ intrinsic, the SDK writes it as asm (khdays OsCountZeroBits)
+0202cddc  func_0202cddc                      inline clz: this compiler has no CLZ intrinsic, the SDK writes it as asm (khdays OsCountZeroBits)
+020c9188  Timer1OverflowInterruptRoutine     interrupt wrapper push r0/lr; bl; pop; bx lr: mwcc returns through pc, so no C form
+020ca390  func_020ca390                      NitroSDK mi_memory.c writes the MIi_Cpu* routines as asm (pmd-sky MTi_CpuClear16 83%; SDK version differs)
+020ca3b8  func_020ca3b8                      NitroSDK mi_memory.c writes the MIi_Cpu* routines as asm (pmd-sky MTi_CpuClear16 77%; SDK version differs)
+020ca408  func_020ca408                      NitroSDK mi_memory.c writes the MIi_Cpu* routines as asm (pmd-sky MTi_CpuCopy32 83%; SDK version differs)
+020ca430  func_020ca430                      NitroSDK mi_memory.c writes the MIi_Cpu* routines as asm (pmd-sky MTi_CpuCopy32 75%; SDK version differs)
+020ca594  VectorizedMemset                   NitroSDK MI_CpuFill8 is asm in mi_memory.c (pmd-sky 81%, SonicRush 68%; SDK version differs)
+020cd594  SaveDivSqrtState                   NitroSDK CP_SaveContext is asm in cp_context.c (SonicRush 94%; SDK version differs)
+020cd5d4  func_020cd5d4                      NitroSDK CPi_RestoreContext is asm in cp_context.c (SonicRush 93%; SDK version differs)
+020c19b8  Mat4x3_WriteRotationZ              NitroSDK MTX_RotZ43_ is asm in fx_mtx43.c (SonicRush fx_mtx43.c:101)
+02000ab0  func_02000ab0                      mrc/mcr p15 have no C form: NitroSDK crt0 CP15 setup (MPU regions, caches, TCM), asm in the SDK

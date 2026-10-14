@@ -221,6 +221,26 @@ def rank(verdict):
     return (3, 1 << 30)
 
 
+def asmparked(mods):
+    """Addresses ov_recover already parked as hand-asm off the allowlist, per module.
+
+    ov_recover writes wlog/asmpark_<sub>.txt when it moves those sources to asm_park_<sub>/. The
+    files stay in gated/ afterwards, so anything that promotes out of gated/ by MATCH verdict alone
+    resurrects them: a MATCH is not permission to land, because hand-asm is byte-exact by
+    construction and is then refused by place() on asm policy. main 0200c0e4, 0200c14c and 020ca650
+    went round this loop every wave -- rescued here, refused by the wave, re-parked by ov_recover,
+    rescued again -- costing a full rebuild each time for 0 commits.
+    """
+    out = {}
+    for sub in mods:
+        p = f"{SP}/wlog/asmpark_{sub}.txt"
+        try:
+            out[sub] = {a.strip().lower() for a in open(p, encoding='utf-8').read().split() if a.strip()}
+        except OSError:
+            out[sub] = set()
+    return out
+
+
 def rescue_gated():
     """Copy proven matches out of gated/ into staging/ so an integration can SEE them.
 
@@ -230,8 +250,12 @@ def rescue_gated():
     then and the `cp ... 2>/dev/null` fails silently. pull_all picks what to integrate by counting
     staging/, so the match becomes invisible: ov000:0215858c ($19.23) and ov024:021ea85c both had to
     be staged by hand. gated/ is proof, so it is safe to promote from.
+
+    An address ov_recover already parked as hand-asm is NOT promoted: see asmparked().
     """
     n = 0
+    subs = {m if m == "main" else "ov" + m for m in sym.values()}
+    parked = asmparked(subs)
     for f in glob.glob(f"{SP}/gated/*/*.cpp"):
         m = re.search(r"([0-9a-fA-F]{8})\.cpp$", os.path.basename(f))
         if not m:
@@ -240,6 +264,8 @@ def rescue_gated():
         if addr in done or addr not in sym:
             continue
         mod = sym[addr]
+        if addr in parked.get(mod if mod == "main" else "ov" + mod, ()):
+            continue
         if gate(mod, addr, f).splitlines()[-1:] != ["MATCH"]:
             continue
         stage = f"{SP}/staging/" + ("main" if mod == "main" else "ov" + mod)

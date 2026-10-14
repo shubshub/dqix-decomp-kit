@@ -17,6 +17,7 @@ import sys
 os.environ["DQIX_NO_FRESHNESS"] = "1"
 import delinked
 import kitpaths
+import plausible
 from pragmas import CODEGEN_PRAGMA
 
 KIT, REPO = kitpaths.KIT, kitpaths.REPO
@@ -111,10 +112,12 @@ def kit(kit_tip, decomp_tip):
 def decomp(decomp_tip):
     problems = []
     changed = git(REPO, "diff", "--name-only", f"{decomp_tip}...HEAD").stdout.split()
+    reviewed = set(filter(None, os.environ.get("PRREADY_REVIEWED", "").split(os.pathsep)))
     for path in changed:
         if not path.startswith(MATCH_PATHS):
-            problems.append(f"OUTSIDE A MATCH {path}: differs from {kitpaths.DECOMP_BRANCH}; restore it with "
-                            f"git checkout {decomp_tip[:10]} -- {path}, or send it as its own pull request")
+            if path not in reviewed:
+                problems.append(f"OUTSIDE A MATCH {path}: differs from {kitpaths.DECOMP_BRANCH}; restore it with "
+                                f"git checkout {decomp_tip[:10]} -- {path}, or send it as its own pull request")
         elif MARKER.search(show(REPO, "HEAD", path)):
             problems.append(f"CONFLICT MARKERS in {path}")
     wired = "\n".join(delinks(REPO, "HEAD", "config"))
@@ -124,6 +127,12 @@ def decomp(decomp_tip):
             problems.append(f"DEAD FILE {path}: no delinks.txt entry names it; delete it")
         elif path.endswith((".c", ".cpp")) and not USA_TAG.search(show(REPO, "HEAD", path)):
             problems.append(f"NO USA TAG {path}: put `// USA: <USA symbol>` on the line above the definition")
+    for path in changed:
+        if path.startswith("src/") and path.endswith((".c", ".cpp")):
+            new = plausible.gained(show(REPO, decomp_tip, path), show(REPO, "HEAD", path))
+            if new:
+                problems.append(f"IMPLAUSIBLE {path}: adds {', '.join(new)}; write what a developer wrote "
+                                f"(worker_src/core.md, NATURAL FORMS THAT MATCH WHERE A TRICK DID)")
     for path in changed:
         if path.startswith("src/"):
             gained = (len(CODEGEN_PRAGMA.findall("\n".join(diff_lines(REPO, decomp_tip, path, "+"))))

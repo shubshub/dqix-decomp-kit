@@ -53,7 +53,7 @@ def simulate(trace, ranks):
 
 
 if __name__ == "__main__":
-    src, mod, addr, size = sys.argv[1], sys.argv[2], int(sys.argv[3], 16), int(sys.argv[4], 0)
+    src, mod, addr, size = sys.argv[1], _kp.module_label(sys.argv[2]), int(sys.argv[3], 16), int(sys.argv[4], 0)
     ranks = {int(k): float(v) for k, v in (a.split("=") for a in sys.argv[5:])}
     out = os.path.splitext(src)[0] + ".cf"
     os.makedirs(out, exist_ok=True)

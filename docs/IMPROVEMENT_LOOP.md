@@ -41,7 +41,7 @@ Promote in the same session that found it. Pick the most automatic home that fit
 | a fault in a compiling source the tools can repair (wrong symbol, `extern "C"` on a mangled callee, unresolved callee) | `autorepair.py`, `symfix.py` or `fixundef.py` | a `regress.py` case that fails without the fix |
 | a wrong fact in a starting file | `scaffold.py` / `infer.py` | regenerate one scaffold and check it |
 | a tool defect | a fix in the shared tool, never a private workaround | a `regress.py` case; `pipetest.py` after touching the gate |
-| a judgement a worker has to make | a rule in `worker_src/core.md` under the heading for its symptom, citing the address | `python build_worker_docs.py`, then grep the built `worker_*.md` for the text |
+| a judgement a worker has to make | a rule in `worker_src/core.md` under the heading for its symptom, citing the address | the landed source with only that construct reverted, gated with `WGATE_ALLOW_COMMITTED=1`, no longer matches (if it still matches, the lever is not the cause: decline it); `plausible.py` is clean on the form the rule teaches; `python build_worker_docs.py`, then grep the built `worker_*.md` for the text |
 | something ruled out, with no general rule | a `deadends.md` row | — |
 | not worth promoting | a decline: `<addr> <reason>` in `$SP/wlog/levers_declined.txt` | — |
 

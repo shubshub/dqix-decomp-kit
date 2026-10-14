@@ -67,6 +67,83 @@ def _decomment_keeps_markers():
     return None
 
 
+def _evo_score(sites_list):
+    class _R:
+        def __init__(self, stdout):
+            self.stdout = stdout
+
+    argv, sys.argv = sys.argv, ["evo_score.py", "main", "02011b68"]
+    try:
+        es = load("pad/evo_score")
+
+        def fake_run(cmd, **kw):
+            n = int((kw.get("env") or {}).get("WDIFF_MAXRUNS") or 12)
+            kept = sites_list[:n]
+            lost = len(sites_list) - len(kept)
+            return _R("BYTEDIFF %d bytes in %d run(s), slot=0x44c isa=thumb\n"
+                      % (len(sites_list), len(sites_list)) + "".join(kept)
+                      + (" ... %d more run(s) suppressed (raise WDIFF_MAXRUNS)\n" % lost if lost else ""))
+
+        es.subprocess = type("_sub", (), {"run": staticmethod(fake_run)})
+        return es
+    finally:
+        sys.argv = argv
+
+
+def _site(off, target, ours):
+    return " *0x%04x  %-34s| %s\n" % (off, target, ours)
+
+
+_HEAD = [_site(o, "ldr r%d,[r3]" % i, "ldr r%d,[r4]" % i)
+         for i, o in enumerate((0x0048, 0x0090, 0x0118, 0x012c, 0x0150, 0x0164, 0x0190,
+                                0x01b0, 0x01d0, 0x01f0, 0x0210, 0x0230, 0x0250, 0x0270))]
+
+
+@check("evo_score's sig separates candidates that are wrong in the same places",
+       "sig was built from the OFFSETS of the differing runs and never from what differs there, so "
+       "c_frameorder.cpp and c_splitframe.cpp scored the same fitness 126 and the same sig "
+       "LOOP-SHAPE@48,90-c4,118,12c-130,150,164-170+3 while emitting different code (the frame "
+       "slots permute: recBase 0->8, fresh 8->0). dqix-evolve.js select() keeps one file per "
+       "signature, so the second residue was discarded unmeasured")
+def _evo_sig_separates_same_offsets():
+    a = _HEAD[:2]
+    b = [_HEAD[0], _site(0x0090, "ldr r0,[r3]", "ldr r0,[r5]")]
+    sa = _evo_score(a).sites("x.cpp")[0]
+    sb = _evo_score(b).sites("x.cpp")[0]
+    if sa == sb:
+        return "same offsets, different instructions, same sig: %s" % sa
+    return None
+
+
+@check("evo_score's sig separates candidates that differ only past the sixth site",
+       "sig named the first 6 differing runs and folded the rest into `+N` -- a count with no "
+       "position and no content -- and wdiff prints only WDIFF_MAXRUNS (12) runs, so two "
+       "candidates wrong in the same first six places but differently after that were one "
+       "signature")
+def _evo_sig_covers_every_site():
+    a = _evo_score(_HEAD).sites("x.cpp")[0]
+    b = _evo_score(_HEAD[:-1] + [_site(0x0270, "ldr r13,[r3]", "ldr r13,[r5]")]).sites("x.cpp")[0]
+    if a == b:
+        return "differing site 14 of 14, sig does not: %s" % a
+    return None
+
+
+@check("evo_score's sig keeps the readable offset prefix boards already carry",
+       "sig is a required field of dqix-evolve.js's scored-file schema and workers' board.tsv "
+       "files hold sigs in the old form; a replacement format would leave every one of them "
+       "unreadable")
+def _evo_sig_keeps_prefix():
+    sig, nbytes = _evo_score(_HEAD).sites("x.cpp")
+    old = "48,90,118,12c,150,164+8"          # the offset list in the format boards already carry
+    if not sig.startswith(old + "~"):
+        return "readable prefix %r lost or reworded: %s" % (old, sig)
+    if not re.fullmatch(r"[0-9a-f]{8}", sig[len(old) + 1:]):
+        return "disambiguator is not a short hex tail: %s" % sig
+    if nbytes != 14:
+        return "BYTEDIFF not parsed: %r" % nbytes
+    return None
+
+
 # ---------------------------------------------------------------- resumable.py
 
 @check("distances() ignores hex tails and size deltas",
@@ -227,37 +304,10 @@ def _r11():
     return None
 
 
-@check("r13 duplicates a pool literal for INDEXED and MEMBER uses, with element-pointer arithmetic",
-       "an array or struct global read at two sites shares one pool word and lands exactly 4 bytes "
-       "short, but r13 only matched `&data_x` -- ov023:021fa2f4 had `data_x[3].fn` and "
-       "`&data_x[idx]` and the sweep could not generate a single candidate. `&data_x[i]` also has "
-       "to cast to the ELEMENT pointer: `__typeof__(&data_x)` is T(*)[], so indexing it steps by "
-       "the whole array")
-def _r13_indexed():
-    C = load("colorsweep")
-    text = ('extern int data_ov023_021fea0c[];\nextern struct P data_020e6d5c;\n'
-            'void f(int i) {\n    data_ov023_021fea0c[3] = data_020e6d5c.a;\n'
-            '    int* d = &data_ov023_021fea0c[i];\n}\n')
-    got = dict(C.r13_dup_pool_literal(text))
-    idx = [c for l, c in got.items() if l.startswith("dupliteralidx")]
-    mem = [c for l, c in got.items() if l.startswith("dupliteralmem")]
-    amp = [c for l, c in got.items() if l.startswith("dupliteral:")]
-    if not idx:
-        return "no candidate for the `data_x[3]` use -- an indexed read owns a pool word too"
-    if not mem:
-        return "no candidate for the `data_x.field` use"
-    if not amp:
-        return "no candidate for the `&data_x[i]` use"
-    if not any("&((__typeof__(&data_ov023_021fea0c[0]))0x021FEA0C)[i]" in c for c in amp):
-        return "`&data_x[i]` was rewritten to a pointer-to-ARRAY cast; indexing that steps by the " \
-               "whole array, so the candidate is wrong even when it compiles"
-    return None
-
-
 @check("neighbours() interleaves the rules instead of concatenating them",
        "a file with many early-rule sites spent the whole budget before a later rule was scored "
-       "once: 150 compiles on ov023:021fa2f4 never reached r13, whose own candidate takes the "
-       "score from 1031 to 32. Every rule must get a turn before any rule gets a second")
+       "once: 150 compiles on ov023:021fa2f4 never reached the rule that cracked it. Every rule "
+       "must get a turn before any rule gets a second")
 def _interleaved():
     C = load("colorsweep")
     text = ('extern int data_ov023_021fea0c[];\n'
@@ -265,14 +315,13 @@ def _interleaved():
             '    int w = a + b;\n    int x = b + c;\n    int y = c + d;\n    int z = d + a;\n'
             '    int* p = &data_ov023_021fea0c[w];\n    int q = x + y + z;\n}\n')
     labels = [l for l, _ in C.neighbours(text)]
-    if not any(l.startswith("dupliteral") for l in labels):
-        return "r13 produced nothing on a text that clearly holds its shape"
-    first = next(i for i, l in enumerate(labels) if l.startswith("dupliteral"))
-    rules = len(C.RULES)
-    if first >= 2 * rules:
-        return ("the first r13 candidate is at position %d of %d; with one candidate per rule per "
-                "round it must appear within the first two rounds (%d)" % (first, len(labels),
-                                                                           2 * rules))
+    if not any(l.startswith("inline1:") for l in labels):
+        return "r22 produced nothing on a text that clearly holds its shape"
+    first = next(i for i, l in enumerate(labels) if l.startswith("inline1:"))
+    producing = sum(1 for rule in C.RULES[:-1] if rule(text))
+    if first >= producing:
+        return ("the first r22 candidate is at position %d of %d; with one candidate per rule per "
+                "round it must appear within the first round (%d)" % (first, len(labels), producing))
     return None
 
 
@@ -463,13 +512,11 @@ def _new_rules():
     return None
 
 
-@check("r43 casts a bitfield read that feeds an add, r44 splits a compound cast store",
+@check("r43 casts a bitfield read that feeds an add",
        "`add rd, rn, rm, shift` folds ONE shift and a bitfield read ends in one, so a bare "
        "`fld->flag + i * 2` folds the extract and gives the other operand the register; a (short) "
-       "cast blocks the fold and emits nothing (0218a9ec). Two writes to one word collapse to one "
-       "store under general DSE, and only a volatile store fed by a non-volatile read keeps both "
-       "of them off sp with no base register (0209a104)")
-def _r43_r44():
+       "cast blocks the fold and emits nothing (0218a9ec)")
+def _r43():
     C = load("colorsweep")
     add = ('ARM void f(Box* fld, int i)\n{\n'
            '    Sink((short)(fld->flag + i * 2 + 0x7530));\n}\n')
@@ -477,15 +524,8 @@ def _r43_r44():
     if not any("(short)fld->flag" in c for c in got):
         return "r43 never cast the bitfield read that feeds the add"
     store = '    *(unsigned int*)((char*)&rec + 4) &= 0x01ffffff;\n'
-    want = ('*(volatile unsigned int*)((char*)&rec + 4) = '
-            '*(unsigned int*)((char*)&rec + 4) & 0x01ffffff;')
-    got = [c for _t, c in C.r44_volatile_split_store(store)]
-    if not any(want in c for c in got):
-        return "r44 never split the compound cast store into a read and a volatile store"
-    if any("volatile volatile" in c for _t, c in C.r44_volatile_split_store(want + "\n")):
-        return "r44 re-qualifies a store that is already volatile"
-    if C.r44_volatile_split_store(add) or C.r43_short_cast_in_add(store):
-        return "a rule fired on a source containing none of its shape"
+    if C.r43_short_cast_in_add(store):
+        return "r43 fired on a source containing none of its shape"
     return None
 
 
@@ -536,55 +576,6 @@ def _r46():
     if C.r46_counter_position('extern "C" ARM int g(int a) {\n    int x;\n    x = a;\n'
                               '    return x;\n}\n'):
         return "r46 fires on a function whose int local is not a loop counter"
-    return None
-
-
-@check("r47 folds the second && operand of a conditional store into a ?:",
-       "A flag stored under `if (A && B)` spilled to the wrong slot and no declaration position "
-       "fixed it; `if (A) V = B ? K : V;` makes the store a compiler-temp spill, which is laid out "
-       "below the declared scalars (021ebb90, 49 -> 35)")
-def _r47():
-    C = load("colorsweep")
-    text = ('extern "C" ARM void f(struct S* e, struct T* obj) {\n'
-            '    int w = 1;\n'
-            '    if (e->mode == 1 && obj->f311 != 0) w = 0;\n'
-            '    g(w);\n}\n')
-    got = [c for _t, c in C.r47_ternary_store(text)]
-    if not any("if (e->mode == 1) w = obj->f311 != 0 ? 0 : w;" in c for c in got):
-        return "r47 never produced `if (A) V = B ? K : V;`"
-    nested = text.replace("e->mode == 1 && obj->f311 != 0", "(e->a && e->b) || obj->f311")
-    if C.r47_ternary_store(nested):
-        return "r47 split an && that is not at the top level of the condition"
-    if C.r47_ternary_store('extern "C" ARM void f(int x) {\n    int y = 1;\n'
-                           '    if (x) y = 0;\n    g(y);\n}\n'):
-        return "r47 fired on a condition with no &&"
-    return None
-
-
-@check("r48 builds a named element pointer through a static inline pointer-arithmetic helper",
-       "The ROM recomputes &obj->arr[i] for a call while ours reused the named e; every direct "
-       "CSE-breaker swapped i and e. An inline helper returning (T*)o + n hides the equality and "
-       "keeps the registers (021ebb90, 35 -> 31); a helper returning &o->arr[n] is re-CSE'd")
-def _r48():
-    C = load("colorsweep")
-    text = ('struct E;\nstruct C;\n'
-            '// USA: func_f\n'
-            'extern "C" ARM void f(struct C* obj, int i) {\n'
-            '    struct E* e = &obj->entries[i];\n'
-            '    g(e);\n'
-            '    h(&obj->entries[i]);\n}\n')
-    got = [c for _t, c in C.r48_inline_index(text)]
-    if not got:
-        return "r48 produced no candidate for `T* e = &obj->arr[i];`"
-    c = got[0]
-    if "static inline struct E* _AtR48_" not in c or "return (struct E*)o + n;" not in c:
-        return "r48 did not emit the void* pointer-arithmetic helper"
-    if "h(&obj->entries[i]);" not in c:
-        return "r48 rewrote the call's own &obj->arr[i], which is the recompute it must keep"
-    if c.index("static inline") > c.index("// USA: func_f"):
-        return "r48 put the helper between the USA tag and the function"
-    if C.r48_inline_index('extern "C" ARM void f(int* p) {\n    int* q = p + 1;\n    g(q);\n}\n'):
-        return "r48 fired on a declaration that is not &base->arr[i]"
     return None
 
 
@@ -707,29 +698,6 @@ def _r53():
     return None
 
 
-@check("r54 gives an indexed struct pointer a two-definition byte offset",
-       "The second definition of the offset flips which scratch register the value and the address "
-       "take (0219e384, 0x644); plain `+=`, locals, casts and operand order are inert")
-def _r54():
-    C = load("colorsweep")
-    text = ('// USA: func_f\n'
-            'extern "C" ARM void f(char* ov, struct E* e) {\n'
-            '    struct Slot* slot = (struct Slot*)(ov + 0x3a9c) + e->idx;\n'
-            '    g(slot);\n}\n')
-    got = C.r54_two_def_offset(text)
-    if not got:
-        return "r54 produced no candidate"
-    c = got[0][1]
-    if ("int off = e->idx;" not in c or "off *= sizeof(struct Slot);" not in c
-            or "struct Slot* slot = (struct Slot*)(ov + 0x3a9c + off);" not in c):
-        return "r54 did not render the two-definition offset"
-    if "int off2 = e->idx;" not in C.r54_two_def_offset(text.replace("g(slot);", "g(slot, off);"))[0][1]:
-        return "r54 reused a name already in the function"
-    if C.r54_two_def_offset(text.replace("(struct Slot*)(ov", "(struct Other*)(ov")):
-        return "r54 fired when the cast type differs from the declared type"
-    return None
-
-
 @check("r56 drops the trailing argument from an extern \"C\" prototype and every call to it",
        "A stale pointer left in r1 at a call means the source passed one argument fewer (ov003:02178910)")
 def _r56():
@@ -765,60 +733,6 @@ def _allman_body():
     got = dict(C.r51_short_spill(text))
     if "    short x;\n" not in got.get("shortspill:x@3", ""):
         return "r51 offered nothing on a brace-below function: %s" % sorted(got)
-    return None
-
-
-@check("r63 splits `v = e OP k;` into `v = e; v OP= k;` and leaves unsafe forms alone",
-       "A single-definition loop bound is forward-substituted; `last = shown; last -= 1;` closed "
-       "SCHED 13 (ov023:021db634)")
-def _r63():
-    C = load("colorsweep")
-    text = ('// USA: func_f\n'
-            'extern "C" ARM void f(unsigned char shown, int* a, int b)\n'
-            '{\n'
-            '    int last;\n'
-            '    int n = b * 4 + 1;\n'
-            '    last = shown - 1;\n'
-            '    b = a[0] + b;\n'
-            '    b = b >> 2;\n'
-            '    b = a[1] + 1 < b;\n'
-            '    b = g(b - 1);\n'
-            '    a[last] = n;\n'
-            '}\n')
-    got = dict(C.r63_split_assign_op(text))
-    want = {"splitop:last@5": "    last = shown;\n    last -= 1;\n",
-            "splitop:n@4": "    int n = b * 4;\n    n += 1;\n"}
-    for label, needle in want.items():
-        if needle not in got.get(label, ""):
-            return "r63 did not emit %r for %s: %s" % (needle, label, sorted(got))
-    if set(got) != set(want):
-        return "r63 split an unsafe form: %s" % sorted(set(got) - set(want))
-    return None
-
-
-@check("r62 aligns one word-aligned extern data object, preferring an array, never a function",
-       "An alignment-qualified object switches mwcc's IR optimizer off for the function (ov015:0218cc24)")
-def _r62():
-    C = load("colorsweep")
-    text = ('extern char data_021940db[];\n'
-            'extern int data_0211e33c;\n'
-            'extern "C" unsigned char data_02193d48[];\n'
-            'extern "C" void g(int x);\n'
-            '// USA: func_f\n'
-            'extern "C" ARM int f(int i) {\n'
-            '    g(i);\n'
-            '    return data_02193d48[i] + data_0211e33c + data_021940db[i];\n}\n')
-    got = C.r62_iro_align(text)
-    if len(got) != 1:
-        return "r62 produced %d candidates, want 1" % len(got)
-    new = got[0][1]
-    if 'extern "C" unsigned char data_02193d48[] __attribute__((aligned(4)));' not in new:
-        return "r62 did not align the word-aligned extern array"
-    if new.count("__attribute__") != 1:
-        return "r62 aligned more than one object"
-    if C.r62_iro_align('extern int data_0211e33c;\nextern "C" void g(int x);\n')[0][1] != \
-            'extern int data_0211e33c __attribute__((aligned(4)));\nextern "C" void g(int x);\n':
-        return "r62 did not fall back to a scalar"
     return None
 
 
@@ -1098,31 +1012,6 @@ def _r29_r34():
     return None
 
 
-@check("r12 emits the zero-accumulator form that forces a redundant copy",
-       "a whole family (02081f20, 020df77c, 0215f060, 0216f634) comes out exactly 4 bytes SHORT "
-       "because clean C lets mwcc skip a register copy the original kept. `x = 0; x = x + e;` is "
-       "the construct that makes mwcc emit `add rD,rS,#0` -- proven by the committed "
-       "SumKeyedLookups02086bf4 -- and `x = 0; x = e - x;` gives the sub form 020df77c reports")
-def _r12():
-    C = load("colorsweep")
-    text = 'ARM void f(Obj* o)\n{\n    int t = o->timer;\n    o->x = t;\n}\n'
-    got = dict(C.r12_zero_accumulator(text))
-    if not got:
-        return "no candidate produced (DECL is anchored ^...$ without re.M -- feed it one line)"
-    plus = got.get("zeroacc+:t", "")
-    minus = got.get("zeroacc-:t", "")
-    if "int t = 0;" not in plus or "t = t + o->timer;" not in plus:
-        return "the add form is not `T x = 0;` + `x = x + e;`"
-    if "t = o->timer - t;" not in minus:
-        return "the sub form is missing; 020df77c needs `sub rD,rS,#0`"
-    # must not fire on pointers or floats, where adding zero is not the same rewrite
-    for bad in ('    char* p = o->name;\n', '    float f = o->rate;\n'):
-        t2 = 'ARM void f(Obj* o)\n{\n' + bad + '}\n'
-        if C.r12_zero_accumulator(t2):
-            return "fired on a non-integer declaration: %r" % bad.strip()
-    return None
-
-
 @check("r4 swaps same-type and bare declarations, not just differing initialised ones",
        "`_independent` counted every identifier left of `=` as WRITTEN, which for a declaration "
        "includes the type: `int a = 1;` and `int b = 2;` both wrote `int`, intersected, and were "
@@ -1186,26 +1075,6 @@ def _r4_preserves_record_layout():
     return None
 
 
-@check("r41 folds the -1 form back to 0 as well as away from it",
-       "the rule shipped one-way, generating only `x >= 0` -> `x > -1`. The sweep hill-climbs from "
-       "OUR source toward the ROM, so the direction it needs most is removing an `mvn` our source "
-       "carries and the ROM does not -- main:02081f20 sat at 23 bytes on exactly that and no rule "
-       "could reach it")
-def _r41_both_ways():
-    C = load("colorsweep")
-    text = ('ARM void f(Obj* o)\n{\n    if (o->timer <= -1) {\n        o->timer = o->b;\n'
-            '    }\n    if (o->a > -1) {\n        g();\n    }\n    if (o->c < 0) {\n'
-            '        h();\n    }\n}\n')
-    got = [c for _t, c in C.r41_nonfoldable_constant(text)]
-    if not any("o->timer < 0" in c for c in got):
-        return "`x <= -1` was never folded to `x < 0`"
-    if not any("o->a >= 0" in c for c in got):
-        return "`x > -1` was never folded to `x >= 0`"
-    if not any("o->c <= -1" in c for c in got):
-        return "the original `x < 0` -> `x <= -1` direction was lost"
-    return None
-
-
 # ---------------------------------------------------------------- residue.py
 
 @check("LOOP-SHAPE means the loop moved, not that the function changed length",
@@ -1259,13 +1128,14 @@ def _loop_shape_class():
        "candidates deferred as wired-0 on every wave forever, silently. Six were hand asm (never to "
        "be landed) and one was real C that no naming rule covered")
 def _placement():
+    import pragmas
     src = open(f"{KIT}/ov_recover.py", encoding="utf-8").read()
-    m = re.search(r"ASMPAT = re\.compile\(r'(\(\?m\)\^\\s\*asm\\b[^']*)'", src)
-    if not m:
-        return "the asm-detection pattern is gone from place()"
-    if "ASM_ALLOW" not in src or "asm_allow.txt" not in src:
+    for tool in ("ov_recover.py", "integrate.py"):
+        if "from pragmas import HAND_ASM as ASMPAT, asm_allow" not in open(f"{KIT}/{tool}", encoding="utf-8").read():
+            return "%s no longer takes the asm pattern and allowlist from pragmas.py" % tool
+    if "ASM_ALLOW" not in src or "asm_allow.txt" not in open(f"{KIT}/pragmas.py", encoding="utf-8").read():
         return "the asm allowlist is gone, so refusal is all-or-nothing again"
-    pat = re.compile(m.group(1))
+    pat = pragmas.HAND_ASM
     asm_src = "// USA: func_1\nARM\nasm void MTX_Identity33_(register void* pDst)\n{\n}\n"
     c_src = "// USA: func_2\nchar* StringReplaceLanguageTag(const char* s, char* d, int l) {\n}\n"
     if not pat.search(asm_src):
@@ -1376,7 +1246,7 @@ def _staging_sweep_keeps_match():
     return None
 
 
-def _compile_elf(text, repo):
+def _compile_elf(text, repo, postcompile=False):
     import io
     import subprocess
     import buildcfg
@@ -1389,6 +1259,8 @@ def _compile_elf(text, repo):
                            capture_output=True, text=True)
         if r.returncode:
             return "COMPILE " + (r.stdout + r.stderr)[-200:]
+        if postcompile:
+            buildcfg.postcompile(obj)
         return ELFFile(io.BytesIO(open(obj, "rb").read()))
 
 
@@ -1559,6 +1431,143 @@ def _rela_addend():
     return None
 
 
+@check("an inline function nothing references leaves the gate one non-empty .text section",
+       "mwcc emits an empty inline destructor as its own multidef .text section; the original -dead "
+       "link stripped it and our -nodead link kept it, so wgate called ov003:0216c00c OVERGEN 4 and "
+       "its dead `rot` copy could only be held with a fake volatile")
+def _dead_inline_section():
+    import buildcfg
+    text = ('struct Vec3 { int x, y, z; ~Vec3() {} };\nextern "C" void Use(void*);\n'
+            'extern "C" void F(char* p) { Vec3 v = *(Vec3*)(p + 8); Use(p); }\n')
+    raw = _compile_elf(text, buildcfg.REPO)
+    if isinstance(raw, str):
+        return raw
+    if len([s for s in raw.iter_sections() if s.name == ".text" and s["sh_size"]]) != 2:
+        return "the fixture no longer emits its destructor out of line"
+    elf = _compile_elf(text, buildcfg.REPO, postcompile=True)
+    kept = buildcfg.sections(elf, ".text")
+    if len(kept) != 1 or not buildcfg.relocations(elf, kept[0][0]):
+        return "after postcompile: %d non-empty .text sections" % len(kept)
+    for tool in ("wgate.py", "wdiff.py", "classify.py", "integrate.py", "tucheck.py"):
+        if "buildcfg.postcompile(" not in open(f"{KIT}/{tool}", encoding="utf-8").read():
+            return "%s no longer runs the build's postcompile step" % tool
+    return None
+
+
+def _main_function(landed):
+    import buildcfg
+    import delinked
+    cfg = f"{buildcfg.REPO}/{buildcfg.config_dir('main')}"
+    texts = [open(f"{cfg}/delinks.txt", encoding="utf-8", errors="ignore").read()]
+    allow = load("pragmas").asm_allow()
+    for m in re.finditer(r"(?m)^\S+ kind:function\(arm,size=0x[0-9a-f]+\) addr:0x([0-9a-f]{8})",
+                         open(f"{cfg}/symbols.txt", encoding="utf-8", errors="ignore").read()):
+        if m.group(1) not in allow and delinked.covers(int(m.group(1), 16), texts) == landed:
+            return m.group(1)
+    return None
+
+
+def _wgate(addr, text, name="t.cpp"):
+    import subprocess
+    with tempfile.TemporaryDirectory(dir=f"{SP}/handwork", ignore_cleanup_errors=True) as d:
+        src = os.path.join(d, name)
+        with open(src, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(text)
+        env = {k: v for k, v in os.environ.items() if not k.startswith("WGATE_ALLOW")}
+        r = subprocess.run([sys.executable, f"{KIT}/wgate.py", "main", addr, src], capture_output=True,
+                           text=True, cwd=_kp.REPO, env={**env, "WGATE_SESSION": "regress"})
+    return r.returncode, r.stdout + r.stderr
+
+
+@check("wgate refuses hand asm off asm_allow.txt before spending a compile, and passes allowlisted asm",
+       "wgate gated main 020c8aac's pure asm body MATCH; place() then parked it, so the worker session "
+       "was paid for a file that could never land and the address was served again (#327)")
+def _gate_refuses_hand_asm():
+    pragmas = load("pragmas")
+    allowed = sorted(pragmas.asm_allow())[0]
+    asm = '#include <globaldefs.h>\nextern "C" ARM asm void f(void) {\n    bx lr\n}\n'
+    if not pragmas.refused_asm("0200aaaa", "x.cpp", asm) or not pragmas.refused_asm("0200aaaa", "x.s", ""):
+        return "refused_asm passes hand asm off the allowlist"
+    if pragmas.refused_asm(allowed, "x.cpp", asm) or pragmas.refused_asm(allowed, "x.s", ""):
+        return "refused_asm refuses %s, which asm_allow.txt lists" % allowed
+    if pragmas.refused_asm("0200aaaa", "x.cpp", 'extern "C" int f(int a) { return a; }\n'):
+        return "refused_asm refuses plain C"
+    if pragmas.refused_asm("0200aaaa", "x.cpp", '// asm void g(void) is what the ROM has\n/* asm { nop } */\n'
+                           'extern "C" int f(int a) { return a; }\n'):
+        return "refused_asm refuses asm quoted in a comment"
+    if not pragmas.refused_asm("0200aaaa", "x.cpp", 'extern "C" int f(int a) {\n    int b;\n'
+                               '    __asm("mov b, a");\n    return b;\n}\n'):
+        return "refused_asm passes an inline __asm register hack"
+    addr = _main_function(landed=False)
+    if not addr:
+        return "no unlanded main function to gate"
+    rc, out = _wgate(addr, asm.replace("void f(", "void func_%s(" % addr))
+    if rc != 1 or "RESIDUE HAND-ASM 1" not in out:
+        return "wgate on an asm body for %s: exit %d, %r" % (addr, rc, out.strip()[-160:])
+    if not re.search(r'grep -qi "\^\$a " "\$KIT/asm_allow.txt"', open(f"{KIT}/stage_gated.sh", encoding="utf-8").read()):
+        return "stage_gated.sh copies hand asm off asm_allow.txt from gated/ back into staging/"
+    return None
+
+
+@check("wgate reports a landed address ALREADY-COMMITTED even when the source does not compile",
+       "the delink check ran after the compile, so a stale copy of a landed function wrote NO-COMPILE "
+       "to its gate ledger: 8 of 10 NO-COMPILE ledgers in one hour were landed addresses (#277)")
+def _committed_before_compile():
+    addr = _main_function(landed=True)
+    if not addr:
+        return "no landed main function to gate"
+    rc, out = _wgate(addr, "this is not C\n")
+    if rc != 2 or "RESIDUE ALREADY-COMMITTED 0" not in out:
+        return "wgate on an uncompilable source for landed %s: exit %d, %r" % (addr, rc, out.strip()[-160:])
+    return None
+
+
+@check("blockercheck counts no landed address as an open or pending blocker",
+       "blockers.tsv is append-only and half its rows are addresses landed since, so health raised "
+       "`CRACK: SHAPE blocks 6 function(s)` with 4 of the 6 already in decomp-matching (020a9eb8)")
+def _blockercheck_skips_landed():
+    import contextlib
+    import io
+    bc = load("blockercheck")
+    landed, open_ = _main_function(landed=True), _main_function(landed=False)
+    with tempfile.TemporaryDirectory(dir=f"{SP}/handwork", ignore_cleanup_errors=True) as d:
+        bc.TSV, bc.DOC, bc.DECLINED = f"{d}/b.tsv", f"{d}/core.md", f"{d}/declined.txt"
+        with open(bc.TSV, "w", encoding="utf-8", newline="\n") as fh:
+            for a in (landed, landed, open_, open_):
+                fh.write("1800000000\tmain\t%s\t600\tZZCLASS\t9\tx\n" % a)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            bc.main()
+    row = next((l for l in out.getvalue().splitlines() if l.startswith("ZZCLASS")), "")
+    if landed in row or open_ not in row or row.split()[1:3] != ["1", "1"]:
+        return "blockercheck row for a landed and an open address: %r" % row
+    return None
+
+
+@check("the linker's section symbols are known to the gate with their delinked addresses",
+       "0200f29c needed a fake size-0 `func_020e5920_dup` alias for its second pool word at the start of "
+       ".init; ARM9_INIT_START names that address, but the gate called it UNDEF-SYM (#335)")
+def _section_lcf_symbols():
+    import buildcfg
+    known = buildcfg.lcf_symbols()
+    head = open(f"{buildcfg.REPO}/{buildcfg.config_dir('main')}/delinks.txt", encoding="utf-8").read()
+    m = re.search(r"(?m)^\s*\.init\s+start:0x([0-9a-fA-F]+)\s+end:0x([0-9a-fA-F]+)", head)
+    if not m:
+        return "main delinks.txt has no .init section header"
+    if known.get("ARM9_INIT_START") != int(m.group(1), 16) or known.get("ARM9_INIT_END") != int(m.group(2), 16):
+        return "lcf_symbols() ARM9_INIT_START/END = %r/%r, delinks .init is %s-%s" % (
+            known.get("ARM9_INIT_START"), known.get("ARM9_INIT_END"), m.group(1), m.group(2))
+    elf = _compile_elf('extern "C" char ARM9_INIT_START[];\nextern "C" unsigned int F() { return (unsigned int)ARM9_INIT_START; }\n',
+                       buildcfg.REPO)
+    if isinstance(elf, str):
+        return elf
+    symtab = elf.get_section_by_name(".symtab")
+    undef = {s.name for s in symtab.iter_symbols() if s["st_shndx"] == "SHN_UNDEF" and s.name}
+    if undef - set(known):
+        return "not linker symbols: %s" % sorted(undef - set(known))
+    return None
+
+
 @check("the NitroSDK stack-size symbols are known linker symbols with the ROM's pool values",
        "main:020c6d48, 020c745c and 020c8548 load SDK_IRQ_STACKSIZE and SDK_SYS_STACKSIZE from their "
        "literal pools; lcf_symbols() did not list them, so wgate called every candidate UNDEF-SYM and "
@@ -1693,7 +1702,7 @@ def _prready():
             "src/A.cpp": "void Foo() {}\n",
             "src/B.cpp": "void Baz() {}\n"})
         commit(pub_kit, {n: open(f"{KIT}/{n}", encoding="utf-8").read()
-                         for n in ("prready.py", "delinked.py", "kitpaths.py", "pragmas.py")}
+                         for n in ("prready.py", "delinked.py", "kitpaths.py", "pragmas.py", "plausible.py", "mangle.py")}
                | {"worker_src/deadends.md": "# dead ends\n", "worker_src/core.md": "# core\n"})
         git(d, "clone", "-q", pub_decomp, decomp)
         git(d, "clone", "-q", pub_kit, kit)
@@ -1709,6 +1718,16 @@ def _prready():
             code, out = prready(mode)
             if code != 0:
                 return f"a current checkout was refused by prready.py {mode}: {out.strip()[-300:]}"
+        commit(decomp, {"tools/configure.py": "PYTHON = 1\n"})
+        code, out = prready("decomp")
+        if code != 1 or "OUTSIDE A MATCH tools/configure.py" not in out:
+            return f"prready.py decomp passed a contributor's unreviewed tooling change: exit {code}"
+        env["PRREADY_REVIEWED"] = "tools/configure.py"
+        code, out = prready("decomp")
+        del env["PRREADY_REVIEWED"]
+        if code != 0:
+            return f"prready.py decomp refused a tooling change landpr supplied itself: {out.strip()[-300:]}"
+        git(decomp, "reset", "-q", "--hard", "HEAD~1")
         commit(decomp, {".github/workflows/match.yml": "on: pull_request\n",
                         "src/Dead.cpp": "void Dead() {}\n",
                         "src/Untagged.cpp": "void Untagged() {}\n",
@@ -1767,16 +1786,8 @@ FUNCTIONAL = [
     ("main", "02065990", "regress_fixtures/InPlaceField5_02065990.cpp", "MATCH", 60,
      "inplace+fold: the copy's shift folded into its initialiser closes the last one-shift fold; the "
      "prior is r52's output, since from the 40-byte one the first level alone exceeds the budget"),
-    ("017", "0219e384", "regress_fixtures/TwoDefOffset_0219e384.cpp", "MATCH", 60,
-     "twodefoff: an indexed struct pointer built from a two-definition byte offset gives the index "
-     "the lower scratch register"),
-    ("031", "02223b1c", "regress_fixtures/ReleaseHandle_02223b1c.cpp", "MATCH", 60,
-     "dupliteral: an absolute-address constant emits the SECOND pool word mwcc folds away"),
     ("017", "021bd5d0", "regress_fixtures/SyncCombatantFlagAndDispatch_021bd5d0.cpp", "MATCH", 150,
      "declmove: one non-adjacent declaration move fixes the register ladder that decides stm fusion"),
-    ("main", "02097280", "regress_fixtures/NullPointerDiffIndex_02097280.cpp", "MATCH", 150,
-     "nullptrdiff: `(int)(p - (char *)0)` is the only unfolded `sub Rd, Rs, #0`, and the binding's "
-     "position in the declaration run decides which register the copy lands in"),
     ("main", "0205f9cc", "regress_fixtures/AllocateAndInsertTimedNode_0205f9cc.cpp", "MATCH", 400,
      "mlaacc: binding a multiply-accumulate's MULTIPLICAND to the result local reverses the operand "
      "load order and stops the destination reusing the addend's register, then declmove colours it"),
@@ -1804,12 +1815,6 @@ FUNCTIONAL = [
     ("main", "02037d88", "regress_fixtures/HandleCombatantTick_02037d88.cpp", "MATCH", 250,
      "callmove: which call runs first decides who owns the callee-saved register for the rest of "
      "the block, and the move has to be allowed to hop a braced dispatch"),
-    ("main", "0202b900", "regress_fixtures/PtrSplit_0202b900.cpp", "MATCH", 60,
-     "ptrsplit: a loop-invariant address bound in one expression is hoisted ahead of the "
-     "neighbouring loads; splitting the bind from the advance puts the `add` back"),
-    ("main", "0209c840", "regress_fixtures/NoFold_0209c840.cpp", "MATCH", 60,
-     "nofold: `>= 0` folds into a cmp immediate and `> -1` cannot, so the ROM's extra `mvn` comes "
-     "back -- same test, one more instruction"),
     ("main", "02053634", "regress_fixtures/BindCall_02053634.cpp", "MATCH", 90,
      "bindcall: a call left inline in a compare always takes Rm, for BOTH operand orders; naming "
      "the result restores left-to-right placement"),
@@ -1819,13 +1824,6 @@ FUNCTIONAL = [
     ("main", "02002b90", "regress_fixtures/GuardedDoWhile_02002b90.cpp", "MATCH", 60,
      "dowhile: mwcc does not rotate loops -- a `while` emits a branch to a bottom test and never "
      "becomes the ROM's top-tested do-while, so the guarded form has to be written directly"),
-    ("main", "020cdfd8", "regress_fixtures/VolatileAlias_020cdfd8.cpp", "MATCH", 60,
-     "volalias: reading a pointer's fields through a `const volatile` alias forbids mwcc reordering "
-     "two loads against each other. The alias is on a PARAMETER, which the first cut of the rule "
-     "could not see -- so it could not reproduce the crack it was derived from"),
-    ("023", "021db634", "regress_fixtures/SplitLoopBound_021db634.cpp", "MATCH", 60,
-     "splitop: `last = shown; last -= 1;` gives a single-definition loop bound a second definition, "
-     "so it is not forward-substituted and i2 = 0 schedules first"),
     ("023", "021ddc98", "regress_fixtures/ShortCanvasX_021ddc98.cpp", "MATCH", 60,
      "shortspill on a brace-below function: `short x` loads with ldrsh into the product temp; the "
      "prior already loads x before y, since neither step alone moves the score"),
@@ -1893,7 +1891,6 @@ def sweep_fingerprint():
             h.update(b"missing")
     h.update(repr(FUNCTIONAL).encode())
     return h.hexdigest()
-
 
 
 @check("recovery delegates Python to the current interpreter and can import its ELF dependency",
@@ -2336,6 +2333,436 @@ def _landpr_merge():
     return None
 
 
+@check("landclean keeps every green rewrite and drops only the ones that red a region",
+       "a cleaned source lands into a file already on decomp-matching; one bad rewrite in a batch must "
+       "not cost the others, and a file that changed since its rewrite must not be overwritten")
+def _landclean_settle():
+    import subprocess
+    lc = load("landclean")
+    entries = [(f"src/{n}.cpp", "b", "") for n in "abcdef"]
+    bad = {"src/c.cpp", "src/f.cpp"}
+    got = lc.settle(entries, lambda part: not bad & {rel for rel, _, _ in part})
+    if [rel for rel, _, _ in got] != ["src/a.cpp", "src/b.cpp", "src/d.cpp", "src/e.cpp"]:
+        return "settle() kept %s" % [rel for rel, _, _ in got]
+    os.makedirs(f"{SP}/handwork", exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="landclean_regress_", dir=f"{SP}/handwork",
+                                     ignore_cleanup_errors=True) as root:
+        def git(*args):
+            return subprocess.run(["git", "-C", root, "-c", "user.name=t", "-c", "user.email=t@t", *args],
+                                  capture_output=True, text=True).stdout.strip()
+
+        git("init", "-q", "-b", "main")
+        for name in ("x", "y"):
+            with open(f"{root}/{name}.cpp", "w", encoding="utf-8") as fh:
+                fh.write(name)
+        git("add", "-A")
+        git("commit", "-qm", "base")
+        x, y = git("rev-parse", "HEAD:x.cpp"), git("rev-parse", "HEAD:y.cpp")
+        old = lc.CLEAN
+        lc.CLEAN = root
+        try:
+            fresh, stale = lc.split_stale(root, [("x.cpp", x, ""), ("y.cpp", x, "")])
+        finally:
+            lc.CLEAN = old
+        if [r for r, _, _ in fresh] != ["x.cpp"] or [r for r, _, _ in stale] != ["y.cpp"]:
+            return "split_stale() kept %s and dropped %s" % (fresh, stale)
+    src = open(f"{KIT}/landclean.py", encoding="utf-8").read()
+    if 'write_rows(MANIFEST, [], "w")' in src or "not in done" not in src:
+        return "landclean empties the whole manifest, dropping rows cleanwork appended while it ran"
+    with tempfile.TemporaryDirectory(prefix="landclean_strip_", dir=f"{SP}/handwork",
+                                     ignore_cleanup_errors=True) as root:
+        os.makedirs(f"{root}/clean/src", exist_ok=True)
+        os.makedirs(f"{root}/tree/src", exist_ok=True)
+        with open(f"{root}/clean/src/a.cpp", "w", encoding="utf-8") as fh:
+            fh.write("// USA: func_a\nint a; // 0x70\n")
+        old, old_git = lc.CLEAN, lc.git
+        lc.CLEAN, lc.git = f"{root}/clean", lambda *a: (0, "")
+        try:
+            lc.apply(f"{root}/tree", "tip", [("src/a.cpp", "b", "")])
+        finally:
+            lc.CLEAN, lc.git = old, old_git
+        landed = open(f"{root}/tree/src/a.cpp", encoding="utf-8").read()
+        if "0x70" in landed or "// USA: func_a" not in landed:
+            return "landclean landed a rewrite with its worker comments, or lost the region tag: %r" % landed
+    return None
+
+
+@check("cleancheck accepts dropping only the invented volatile and refuses touching a real one",
+       "0205e330's queue counts are written by a VCount interrupt consumer; a cleanup that strips every "
+       "volatile in a file would remove the real ones with the invented")
+def _cleancheck():
+    C = load("cleancheck")
+    before = ["struct Q { volatile int count; };", "    x = *(volatile int*)&e->id;", "    y = 1;"]
+    good = ["struct Q { volatile int count; };", "    x = e->id;", "    y = 1;"]
+    bad = ["struct Q { int count; };", "    x = *(volatile int*)&e->id;", "    y = 1;"]
+    if C.check(before, good, {2})[0] or C.check(before, good, {2})[2] >= 2:
+        return "cleancheck refused a rewrite that dropped only the invented volatile"
+    if not C.check(before, bad, {2})[0]:
+        return "cleancheck accepted a rewrite that dropped a real volatile"
+    pun = ["void f(S* p) {", "    if (*(int*)p == 0) return;", "    g(p->ptr);", "}"]
+    plain = ["void f(S* p) {", "    if (p->ptr == 0) return;", "    g(p->ptr);", "}"]
+    swap = ["void f(S* p) {", "    S* q = p; q++;", "    if ((q - 1)->ptr == 0) return;", "    g(p->ptr);", "}"]
+    if not C.accepted(pun, plain, {2})[0]:
+        return "cleancheck refused a rewrite that removed an integer-read null test"
+    if C.accepted(pun, swap, {2})[0]:
+        return "cleancheck accepted a rewrite that swapped one invented construct for another"
+    sentinel = pun[:2] + ["    if (p->n > -1) g(p->ptr);", "}"]
+    if C.accepted(sentinel, pun[:2] + ["    if (p->n >= 0) g(p->ptr);", "}"], {2})[0]:
+        return "cleancheck accepted a rewrite that removed only an advisory finding"
+    work = open(f"{KIT}/cleanwork.sh", encoding="utf-8").read()
+    if 'plausible.py" --blocking "$1"' not in work:
+        return "cleanwork counts advisory findings as work left"
+    import subprocess
+    finished = re.search(r"(?m)^finished\(\) \{.*\}$", work).group(0)
+    with tempfile.TemporaryDirectory(prefix="cleanretry_", dir=f"{SP}/handwork", ignore_cleanup_errors=True) as root:
+        log = f"{root}/clean.log"
+        with open(log, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write("01:00 BLOCKED 0200aaaa x\n01:00 CLEAN 0200bbbb x\n01:05 RETRY 0200bbbb\n"
+                     "01:00 KEEP 0200cccc x\n01:05 RETRY 0200cccc\n01:09 BLOCKED 0200cccc y\n")
+        script = f"{finished}\nLOG='{log}'\nfor a in 0200aaaa 0200bbbb 0200cccc 0200dddd; do finished $a && echo $a; done\n"
+        bash, benv = _kp.bash()
+        done = subprocess.run([bash, "-c", script], capture_output=True, text=True, env=benv).stdout.split()
+    if done != ["0200aaaa", "0200cccc"]:
+        return "cleanwork's finished() after RETRY lines: %r, want ['0200aaaa', '0200cccc']" % done
+    if 'grep -qi "^$ADDR " "$KIT/asm_allow.txt"' not in work:
+        return "cleanwork stages hand-asm off asm_allow.txt, which the integrator parks and cleanwork restages"
+    pull = open(f"{KIT}/pull_all.sh", encoding="utf-8").read()
+    if 'claim.py" --best 2>/dev/null); _rc=$?' not in pull or "update_blocked=$SECONDS" not in pull:
+        return "pull_all.sh reads claim.py's refusal as drained pools, or latches a blocked kit update forever"
+    sweep = re.search(r'(?m)^\s*if \[ "\$SWEEP_EVERY" -gt 0 \].*\n.*then$', pull)
+    if not sweep or '[ "${_behind:-0}" -eq 0 ]' not in sweep.group(0):
+        return "pull_all.sh starts a 2.5h repair sweep while the kit is behind, so the update and every claim wait on it"
+    old = os.environ.get("LEVERCHECK_DOCS")
+    os.environ["LEVERCHECK_DOCS"] = "worker_src/core.md"
+    try:
+        docs = load("levercheck").doc_paths()
+    finally:
+        if old is None:
+            del os.environ["LEVERCHECK_DOCS"]
+        else:
+            os.environ["LEVERCHECK_DOCS"] = old
+    if docs != [os.path.normpath(f"{KIT}/worker_src/core.md")]:
+        return "levercheck resolves a relative LEVERCHECK_DOCS entry against the cwd: %r" % docs
+    return None
+
+
+@check("plausible.py flags an extern \"C\" mangled declaration whose parameter count the mangling contradicts",
+       "a 020709ec cleanup replaced a volatile local with a fourth argument to InitListBuffers02070a30, "
+       "whose mangled name and definition take three")
+def _plausible_mangle_arity():
+    P = load("plausible")
+    name = "_Z23InitListBuffers02070a30P14Struct02070a30P13SafeAllocatorPv"
+    bad = 'extern "C" void %s(void*, void*, void*, unsigned int);\n' % name
+    good = 'extern "C" void %s(void*, void*, void*);\n' % name
+    member = 'extern "C" void _ZN16BackgroundLoader13AddLockGlobalEv(void*);\n'
+    if "MANGLE-ARITY-MISMATCH" not in repr(P.findings(bad)):
+        return "plausible.py missed a fourth argument to a three-parameter mangled function"
+    if P.findings(good) or P.findings(member):
+        return "plausible.py flagged a declaration that matches its mangling: %r" % (P.findings(good) + P.findings(member))
+    return None
+
+
+@check("plausible.py flags an accessor or alias used beside the direct access it re-reads",
+       "cleanup workers swapped volatile for `GetSize(s) < s->count; s->size <<= 1;` (0203e6c8) and "
+       "`counts = data; if (counts[1]) return x[data[1] - 1];` (020a1fd4): the same reload, a new disguise")
+def _plausible_mixed_access():
+    P = load("plausible")
+    mixed = ("static inline unsigned short GetSize(const L* s) { return s->size; }\n"
+             "void f(L* s) {\n    if (GetSize(s) < s->count) s->size <<= 1;\n}\n")
+    alias = ("extern unsigned char data[];\nint f(void) {\n    const unsigned char* counts = data;\n"
+             "    if (counts[1] != 0) return x[data[1] - 1];\n    return 0;\n}\n")
+    plain = ("static inline unsigned short GetSize(const L* s) { return s->size; }\n"
+             "void f(L* s) {\n    if (GetSize(s) < s->count) Grow(s);\n}\n")
+    if "MIXED-ACCESS-RELOAD" not in repr(P.findings(mixed)):
+        return "plausible.py missed an accessor beside a direct access to the same field"
+    if "ALIAS-REREAD" not in repr(P.findings(alias)):
+        return "plausible.py missed a one-use alias beside the global it aliases"
+    if [k for _, k, _ in P.findings(plain) if k in ("MIXED-ACCESS-RELOAD", "ALIAS-REREAD")]:
+        return "plausible.py flagged an accessor used alone: %r" % P.findings(plain)
+    return None
+
+
+@check("plausible.py flags source transliterated from the listing: register-named variables or address labels",
+       "83 functions were written one instruction per statement (`unsigned int r4 = 0; r4 = r0; ... goto L1c;`); "
+       "a contributor reported his agent doing the same")
+def _plausible_transliterated():
+    P = load("plausible")
+    bad = ("extern \"C\" unsigned int f(unsigned int r0, unsigned int r1) {\n    unsigned int r4 = 0;\n"
+           "    r4 = r0;\n    if (r4 == 0) goto L1c;\n    g(r4);\nL1c:;\n    return r0;\n}\n")
+    good = ("extern \"C\" void f(Obj* self, int id) {\n    if (self->count != 0) {\n        g(self, id);\n"
+            "    }\n}\n")
+    if "TRANSLITERATED" not in repr(P.findings(bad)):
+        return "plausible.py missed register-named variables and an address label"
+    if [k for _, k, _ in P.findings(good) if k == "TRANSLITERATED"]:
+        return "plausible.py flagged natural source as transliterated"
+    return None
+
+
+@check("plausible.py catches the mirrored `-1 < x` and the inline split add a worker used to dodge it",
+       "cleanup workers rewrote `index > -1` as `-1 < index` (0204027c) and `p += 0x2c00; p[0x5c]` as "
+       "`((sub + 0x5c) + 0x2c00)` (020abd20)")
+def _plausible_dodges():
+    P = load("plausible")
+    wrap = "void f(void) {\n    %s\n}\n"
+    for bad, kind in (("if (-1 < index) g();", "COMPARE-MINUS-ONE"),
+                      ("x = *(int*)((sub + 0x5c) + 0x2c00);", "SPLIT-POINTER-ADD")):
+        if kind not in repr(P.findings(wrap % bad)):
+            return "plausible.py missed %s in %r" % (kind, bad)
+    for good in ("x = (a - 1 < b);", "y = (p + i) + 0x100;", "z = base + 0x2c5c;"):
+        if P.findings(wrap % good):
+            return "plausible.py flagged %r: %r" % (good, P.findings(wrap % good))
+    return None
+
+
+@check("implausible code is held, not landed: prready refuses new findings and the fleet holds a flagged match",
+       "plausible.py findings only triggered one cleanup try and then landed anyway, and landpr never "
+       "checked them (user, 2026-10-12: block, clean, then land)")
+def _implausible_blocks():
+    import subprocess
+    pr = load("plausible")
+    clean = "void f(S* p) {\n    if (p->ptr == 0) return;\n}\n"
+    pun = "void f(S* p) {\n    if (*(int*)p == 0) return;\n}\n"
+    if pr.gained(clean, pun) != ["INT-PUN-NULL-TEST"]:
+        return "prready did not report a finding the change adds: %r" % pr.gained(clean, pun)
+    if pr.gained(pun, pun):
+        return "prready blamed a change for a finding the tip already had"
+    regs = "// USA: func_0202c9ac\nvoid f(Info* d, u32 r1, u32 r2) {\n    d->p = r1 | r2 << 4;\n}\n"
+    if pr.gained("", regs) != ["TRANSLITERATED"]:
+        return "register-named variables do not block: %r" % pr.gained("", regs)
+    natural = "void f(int* p) {\n    int ret = *p;\n    ret = (ret < 0) ? -ret : ret;\n    *p = ret;\n}\n"
+    if pr.gained("", natural):
+        return "a construct real game code uses blocks: %r" % pr.gained("", natural)
+    old = pr.ALLOW_FILE
+    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False, encoding="utf-8") as fh:
+        fh.write("0202c9ac TRANSLITERATED reviewer the SDK names these r1/r2\n")
+    pr.ALLOW_FILE = fh.name
+    try:
+        if pr.gained("", regs):
+            return "an approved exception in plausible_allow.txt still blocks"
+    finally:
+        pr.ALLOW_FILE = old
+        os.unlink(fh.name)
+    worker = open(f"{KIT}/pull_worker.sh", encoding="utf-8").read()
+    if 'plausible.py" --hold' not in worker or 'if [ -n "$_held" ]; then' not in worker:
+        return "pull_worker.sh still stages a match plausible.py flags after its cleanup"
+    for script in ("integrate.py", "ov_recover.py"):
+        if "_plausible.hold(" not in open(f"{KIT}/{script}", encoding="utf-8").read():
+            return "%s lands a staged match plausible.py flags (gated/ rescue bypasses the worker's hold)" % script
+    with tempfile.TemporaryDirectory(prefix="plaushold_", dir=f"{SP}/handwork", ignore_cleanup_errors=True) as sp:
+        src = f"{sp}/f_0202c9ac.cpp"
+        with open(src, "w", encoding="utf-8") as fh:
+            fh.write("// USA: func_0202c9ac\n" + pun)
+        if pr.hold(src, "main", "0202c9ac", sp) != ["INT-PUN-NULL-TEST"]:
+            return "plausible.hold did not hold a flagged source"
+        row = open(f"{sp}/wlog/clean_queue.tsv", encoding="utf-8").read().split("\t")
+        if row[:2] != ["main", "0202c9ac"] or not os.path.exists(row[2]) or row[5].strip() != "staging":
+            return "plausible.hold queued %r" % row
+        with open(src, "w", encoding="utf-8") as fh:
+            fh.write("// USA: func_0202c9ac\n" + clean)
+        if pr.hold(src, "main", "0202c9ac", sp):
+            return "plausible.hold held a clean source"
+    lp = load("landpr")
+    os.makedirs(f"{SP}/handwork", exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="landpr_fixes_", dir=f"{SP}/handwork",
+                                     ignore_cleanup_errors=True) as root:
+        tree, fixes = f"{root}/tree", f"{root}/fixes"
+        os.makedirs(f"{tree}/src", exist_ok=True)
+        os.makedirs(f"{fixes}/src", exist_ok=True)
+
+        def git(*args):
+            return subprocess.run(["git", "-C", tree, "-c", "user.name=t", "-c", "user.email=t@t", *args],
+                                  capture_output=True, text=True).stdout.strip()
+
+        git("init", "-q", "-b", "main")
+        with open(f"{tree}/src/a.cpp", "w", encoding="utf-8") as fh:
+            fh.write(pun)
+        git("add", "-A")
+        git("commit", "-qm", "Merge #5")
+        with open(f"{fixes}/src/a.cpp", "w", encoding="utf-8") as fh:
+            fh.write(clean)
+        old = lp.git
+        def fake_git(t, *a):
+            r = subprocess.run(["git", "-C", t, "-c", "user.name=t", "-c", "user.email=t@t", *a],
+                               capture_output=True, text=True)
+            return r.returncode, r.stdout
+
+        lp.git = fake_git
+        try:
+            lp.apply_fixes(tree, fixes, ["5"])
+        finally:
+            lp.git = old
+        if git("log", "-1", "--format=%s") != "Clean #5" or "*(int*)" in open(f"{tree}/src/a.cpp").read():
+            return "landpr --fixes did not commit the cleaned source as `Clean #5`"
+        os.makedirs(f"{tree}/config/usa", exist_ok=True)
+        with open(f"{tree}/src/b.cpp", "w", encoding="utf-8") as fh:
+            fh.write(pun)
+        with open(f"{tree}/config/usa/delinks.txt", "w", encoding="utf-8") as fh:
+            fh.write("src/a.cpp:\n    complete\n    .text start:0x0 end:0x4\n\nsrc/b.cpp:\n    complete\n"
+                     "    .text start:0x4 end:0x8\n")
+        git("add", "-A")
+        git("commit", "-qm", "Merge #6")
+        with open(f"{fixes}/DROP", "w", encoding="utf-8") as fh:
+            fh.write("src/b.cpp\n")
+        lp.git = fake_git
+        try:
+            lp.apply_fixes(tree, fixes, ["6"])
+        finally:
+            lp.git = old
+        links = open(f"{tree}/config/usa/delinks.txt", encoding="utf-8").read()
+        if os.path.exists(f"{tree}/src/b.cpp") or "src/b.cpp" in links or "src/a.cpp" not in links:
+            return "landpr --fixes DROP did not remove the held file and only its delinks block"
+        os.unlink(f"{fixes}/DROP")
+        git("checkout", "-qb", "pr")
+        with open(f"{tree}/src/a.cpp", "w", encoding="utf-8") as fh:
+            fh.write("struct Unused {};\n" + clean)
+        git("commit", "-qam", "theirs")
+        git("checkout", "-q", "main")
+        with open(f"{tree}/src/a.cpp", "w", encoding="utf-8") as fh:
+            fh.write("struct Other {};\n" + clean)
+        git("commit", "-qam", "ours")
+        with open(f"{fixes}/src/a.cpp", "w", encoding="utf-8") as fh:
+            fh.write(clean)
+        lp.git = fake_git
+        try:
+            code = fake_git(tree, "merge", "--no-ff", "-m", "Merge #7", "pr")[0]
+            took = code and lp.take_fixes(tree, fixes)
+        finally:
+            lp.git = old
+        if not code or not took or git("rev-parse", "HEAD^2") != git("rev-parse", "pr"):
+            return "landpr --fixes did not resolve a conflict in a file it replaces with the fixed version"
+        if open(f"{tree}/src/a.cpp", encoding="utf-8").read() != clean:
+            return "landpr --fixes resolved a conflict to something other than the fixed version"
+        os.makedirs(f"{tree}/tools", exist_ok=True)
+        os.makedirs(f"{fixes}/tools", exist_ok=True)
+        with open(f"{tree}/tools/configure.py", "w", encoding="utf-8") as fh:
+            fh.write("PYTHON = 1\n")
+        git("add", "-A")
+        git("commit", "-qm", "Merge #8")
+        with open(f"{fixes}/tools/configure.py", "w", encoding="utf-8") as fh:
+            fh.write("PYTHON = 2\n")
+        lp.git = fake_git
+        try:
+            lp.apply_fixes(tree, fixes, ["8"])
+        finally:
+            lp.git = old
+        if git("log", "-1", "--format=%s") != "Clean #8" or git("status", "--porcelain"):
+            return "landpr --fixes left a fixed file outside src/ uncommitted"
+    return None
+
+
+@check("buildcfg falls back to the default assembler flags when a configure.py defines none",
+       "wgate.py crashed on eakeys/text because that branch's configure.py has no AS_FLAGS")
+def _buildcfg_as_flags():
+    src = open(f"{KIT}/buildcfg.py", encoding="utf-8").read()
+    if "_cfg.AS_FLAGS.split()" in src or 'getattr(_cfg, "AS_FLAGS"' not in src:
+        return "buildcfg.py still requires configure.py to define AS_FLAGS"
+    return None
+
+
+@check("mechclean rewrites each one-form construct to its natural spelling and nothing else",
+       "workers spent a session each on `x > -1`, a no-op address cast and a getter local that a "
+       "rewrite plus one gate settles")
+def _mechclean_rewrites():
+    M = load("mechclean")
+    cases = [
+        (["COMPARE-MINUS-ONE"], "    if (obj->count > -1) f();", "    if (obj->count > -1) f();"),
+        (["NOOP-ADDR-CAST"], "    v = *(unsigned char*)&e->field24;", "    v = e->field24;"),
+        (["TERNARY-SELF"], "    s = s->bit0 ? s : NULL;", "    if (!(s->bit0)) s = NULL;"),
+        (["SELF-ASSIGN"], "    a = a;\n    b = 1;", "    b = 1;"),
+        (["INLINE-LOCAL-RETURN"], "static inline int Get(S* s) { int v = s->hp; return v; }",
+         "static inline int Get(S* s) { return s->hp; }"),
+        (["NOOP-ADDR-CAST"], "    x = y > -1;", "    x = y > -1;"),
+        (["INLINE-LOCAL-RETURN"], "inline T& GetT() { static T s; return s; }",
+         "inline T& GetT() { static T s; return s; }"),
+    ]
+    for kinds, before, want in cases:
+        got = M.rewrite(before, kinds)
+        if got != want:
+            return "%s: %r became %r, want %r" % (kinds, before, got, want)
+    asserted = [
+        ("static inline short CurrHP(GameObject* c) { short v = c->stats->hp; return v; }",
+         "static inline short CurrHP(GameObject* c) { SDK_NULL_ASSERT(c); return c->stats->hp; }"),
+        ("    short GetId() const { short id = s4; return id; }",
+         "    short GetId() const { SDK_NULL_ASSERT(this); return s4; }"),
+        ("static inline int Sum(int a, int b) { int v = a + b; return v; }",
+         "static inline int Sum(int a, int b) { int v = a + b; return v; }"),
+        ("struct A;\nstruct B;\nstatic inline B* AsB(A* a) { B* b = (B*)a; return b; }\n"
+         "static inline int Hp(S* s) { int v = s->hp; return v; }",
+         "struct A;\nstruct B;\nstatic inline B* AsB(A* a) { B* b = (B*)a; return b; }\n"
+         "static inline int Hp(S* s) { SDK_NULL_ASSERT(s); return s->hp; }"),
+    ]
+    for before, want in asserted:
+        got = M.rewrite(before, ["INLINE-LOCAL-RETURN"], True)
+        if got != want:
+            return "asserted: %r became %r, want %r" % (before, got, want)
+    return None
+
+
+@check("mechclean keeps an inline's statement boundary with the assert when the plain return misses",
+       "65 INLINE-LOCAL-RETURN findings matched only with the local: any statement before the return "
+       "makes mwcc expand the inline at the start of the calling statement, and the plain return "
+       "missed on all 35 files tried (021e4c04 SCHED 37) while ((void)0) matched 34")
+def _mechclean_assert_fallback():
+    import shutil
+    M = load("mechclean")
+    if (["INLINE-LOCAL-RETURN"], True) not in list(M.candidates(["INLINE-LOCAL-RETURN", "NOOP-ADDR-CAST"])):
+        return "a cast rewrite that breaks the match also throws away the getter fix (0219e384, 02157d40)"
+    seen = []
+    M.gate = lambda mod, addr, path: seen.append(open(path, encoding="utf-8").read()) or "SDK_NULL_ASSERT" in seen[-1]
+    M.finished = lambda addr: False
+    sp = tempfile.mkdtemp()
+    try:
+        M.SP, M.WORK, M.CLAIMS, M.LOG = sp, f"{sp}/work", f"{sp}/claims", f"{sp}/clean.log"
+        os.makedirs(M.CLAIMS)
+        held = f"{sp}/hold_plausible/ov024/func_ov024_021e4c04.cpp"
+        os.makedirs(os.path.dirname(held))
+        with open(held, "w", encoding="utf-8") as fh:
+            fh.write("#include <globaldefs.h>\nstruct S { short hp; };\n"
+                     "static inline short GetHP(S* c) { short hp = c->hp; return hp; }\n"
+                     'extern "C" ARM int f(S* c) { return GetHP(c) - 1; }\n')
+        result = M.job(["024", "021e4c04", held, "3", "INLINE-LOCAL-RETURN", "staging"])
+        staged = f"{sp}/staging/ov024/func_ov024_021e4c04.cpp"
+        if len(seen) != 2 or "SDK_NULL_ASSERT" in seen[0]:
+            return "mechclean did not try the plain return first, then the assert (%d gates)" % len(seen)
+        if not os.path.exists(staged) or os.path.exists(held):
+            return "the cleaned staging row did not move to staging/ (%s)" % result
+        if "{ SDK_NULL_ASSERT(c); return c->hp; }" not in open(staged, encoding="utf-8").read():
+            return "the staged file does not carry the assert form"
+        return None
+    finally:
+        shutil.rmtree(sp, ignore_errors=True)
+
+
+@check("landpr leaves the integration tree on the published tip when it refuses",
+       "a prready refusal left Merge #106 checked out; integrate_fast built on it and published the "
+       "codegen pragma landpr had refused")
+def _landpr_refuse_resets():
+    import contextlib
+    import io
+    import subprocess
+    lp = load("landpr")
+    os.makedirs(f"{SP}/handwork", exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="landpr_refuse_", dir=f"{SP}/handwork",
+                                     ignore_cleanup_errors=True) as root:
+        def git(*args):
+            return subprocess.run(["git", "-C", root, "-c", "user.name=t", "-c", "user.email=t@t", *args],
+                                  capture_output=True, text=True).stdout.strip()
+
+        git("init", "-q", "-b", "main")
+        git("commit", "-q", "--allow-empty", "-m", "base")
+        tip = git("rev-parse", "HEAD")
+        git("commit", "-q", "--allow-empty", "-m", "Merge #5")
+        getattr(lp, "UNDO", []).append((root, tip))
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                lp.refuse("prready")
+        except SystemExit:
+            pass
+        if git("rev-parse", "HEAD") != tip:
+            return "refuse() left the merged commits checked out for the next integration to publish"
+    return None
+
+
 STAMP = f"{SP}/wlog/functional_stamp.txt"
 
 
@@ -2362,10 +2789,18 @@ def _repool_member():
     new, _what = R.rewrite(member, True, spell, {}, set(), {}, {})
     if new != member:
         return "rewrote a member declaration and its call"
-    free = "int Foo();\n\nvoid f() { Foo(); }\n"
+    free = 'extern "C" int Foo();\n\nvoid f() { Foo(); }\n'
     new, _what = R.rewrite(free, True, spell, {}, set(), {}, {})
     if not new or "_Z3Foov" not in new:
         return "no longer rewrites a renamed free function"
+    cxx = "int Foo();\n\nvoid f() { Foo(); }\n"
+    new, _what = R.rewrite(cxx, True, spell, {}, set(), {}, {})
+    if new != cxx:
+        return "rewrote a C++ call whose new symbol is its own mangling, which then clashes with the header"
+    free_member = "struct GameState;\nvoid* GetGrottoStruct(GameState*);\n\nvoid f(GameState* g) { GetGrottoStruct(g); }\n"
+    new, _what = R.rewrite(free_member, True, spell, {}, set(), {}, {})
+    if new is not None:
+        return "rewrote a free call into a member's mangled name, which does not compile"
 
 
 @check("wgate selects ISA and size by physical address, not raw-name suffix",
@@ -2408,9 +2843,6 @@ def _gate_slot_address():
             actual = None
         if actual != expected:
             return "%s: got %r, expected %r" % (label, actual, expected)
-
-
-
 
 
 def _region_functions(script, root, region):
@@ -2557,7 +2989,6 @@ def _integration_shell_environment():
                     "/tools/compiler root", "-w", "/tools/wine runner"]
             if result.returncode or got != want:
                 return "%s forwarded %r, expected %r: %s" % (script, got, want, result.stderr)
-
 
 
 def _fixture_assignments(source, ns, names):
@@ -2776,6 +3207,399 @@ def _integ_bootstrap():
     return None
 
 
+@check("both integrators skip sha1 without an ARM7 BIOS and still require it with one",
+       "finish_wave exited 5 at `RED: sha1 mismatch` on every module for a contributor without the "
+       "BIOS dump, so countfix, regionsync and the push never ran; CONTRIBUTING.md asks for sha1 only "
+       "when you have the BIOS")
+def _sha1_without_bios():
+    import subprocess
+    for script in ("integrate_fast.sh", "finish_wave.sh"):
+        src = open(f"{KIT}/{script}", encoding="utf-8").read()
+        i, j = src.find("sha1_ok() {"), src.find("\n}\n", src.find("sha1_ok() {"))
+        if i < 0 or j < 0:
+            return "%s has no sha1_ok()" % script
+        if 'ninja sha1 2>&1 | grep -q "OK"' in src[j:]:
+            return "%s still runs a raw sha1 check outside sha1_ok()" % script
+        bash, env = _kp.bash(dict(os.environ, LOG="/dev/null"))
+        with tempfile.TemporaryDirectory() as d:
+            harness = src[i:j + 3] + 'ninja() { echo MISMATCH; }\nsha1_ok && echo PASS || echo FAIL\n'
+            r = subprocess.run([bash, "-c", harness], cwd=d, capture_output=True, text=True, env=env)
+            if "PASS" not in r.stdout:
+                return "%s sha1_ok fails without arm7_bios.bin: %r" % (script, r.stdout + r.stderr)
+            open(os.path.join(d, "arm7_bios.bin"), "w").close()
+            r = subprocess.run([bash, "-c", harness], cwd=d, capture_output=True, text=True, env=env)
+            if "FAIL" not in r.stdout:
+                return "%s sha1_ok passed a mismatch with the BIOS present" % script
+    return None
+
+
+@check("both integrators build objdiff.json before countfix and report a countfix failure",
+       "on a cold integration tree countfix read a missing objdiff.json, raised, corrected nothing, "
+       "and integrate_fast still reported GREEN because only exit 3 was handled (kit issue #233)")
+def _countfix_prereq():
+    for script in ("integrate_fast.sh", "finish_wave.sh"):
+        src = open(f"{KIT}/{script}", encoding="utf-8").read()
+        i = src.find('countfix.py"')
+        pre = src.rfind("ninja objdiff.json", 0, i)
+        if i < 0 or pre < 0 or src.count("\n", pre, i) > 2:
+            return "%s does not build objdiff.json right before countfix" % script
+        if "WARN countfix failed" not in src:
+            return "%s does not report an unexpected countfix exit" % script
+    return None
+
+
+@check("a worker MATCH with an invented construct goes back to the worker before it is staged",
+       "021f9874, 021edf54 and 02184d80 were staged and landed with a volatile alias, volatile "
+       "struct members and an invented parameter, because nothing checked a MATCH for constructs "
+       "the developers could not have written until after it had landed")
+def _match_quality_gate():
+    src = open(f"{KIT}/pull_worker.sh", encoding="utf-8").read()
+    i = src.find("matched=$((matched+1)); v=MATCH")
+    j = src.find('cp "$f" "$STAGE/', i)
+    if i < 0 or j < 0:
+        return "the MATCH branch or its staging copy moved"
+    block = src[i:j]
+    for need in ('plausible.py" "$f"', "--resume", "suspect.tsv"):
+        if need not in block:
+            return "the MATCH branch no longer has %r before staging" % need
+    return None
+
+
+@check("recipe_select --lean keeps only the procedure and indexes every recipe",
+       "the per-function doc runs to 55 KB and is re-sent on every worker turn; 2gifts' workers read "
+       "a 3-8 KB brief and look recipes up on demand, so the lean arm must stay that small")
+def _lean_doc():
+    import subprocess
+    out = subprocess.run([sys.executable, f"{KIT}/recipe_select.py", "main", "02000c9c", "--lean"],
+                         capture_output=True, text=True).stdout.strip().replace("\\", "/")
+    if not out or not os.path.exists(out):
+        return "recipe_select --lean produced no doc"
+    doc = open(out, encoding="utf-8").read()
+    subprocess.run([sys.executable, f"{KIT}/recipe_select.py", "main", "02000c9c"], capture_output=True)
+    if len(doc) > 20000:
+        return "the lean doc is %d bytes" % len(doc)
+    if "RECIPES NOT INCLUDED" not in doc:
+        return "the lean doc has no recipe index"
+    if "PULL_LEAN" not in open(f"{KIT}/pull_worker.sh", encoding="utf-8").read():
+        return "pull_worker has no PULL_LEAN arm"
+    return None
+
+
+@check("an evolve run reserves its address against worker claims",
+       "evolve ran on ov009 02185634 while a worker claimed the same address, paying twice for one "
+       "function: nothing put an evolve target in wlog/evolve_queue.txt, the list claim.py skips")
+def _evolve_reserves_address():
+    E = load("evocap")
+    with tempfile.TemporaryDirectory() as d:
+        q = os.path.join(d, "evolve_queue.txt")
+        E.reserve("009", "02185634", q)
+        E.reserve("009", "02185634", q)
+        E.reserve("main", "0201099c", q)
+        lines = open(q, encoding="utf-8").read().split()
+        if lines != ["ov009:02185634", "main:0201099c"]:
+            return "evolve_queue.txt holds %r" % lines
+    if "--reserve ${MOD}" not in open(f"{KIT}/.claude/workflows/dqix-evolve.js", encoding="utf-8").read():
+        return "the evolve workflow does not pass --reserve to evocap.py"
+    return None
+
+
+@check("plausible.py flags a const volatile pointer local",
+       "`const volatile struct CombatantStruct* c_v = c;` in 021f9874's worker attempt passed "
+       "plausible.py because its volatile check required the line to start with `volatile`")
+def _plausible_const_volatile():
+    text = "void f(struct S* c) {\n    const volatile struct S* c_v = c;\n    g(c_v);\n}\n"
+    if "VOLATILE-LOCAL" not in repr(load("plausible").findings(text)):
+        return "plausible.py did not flag `const volatile struct S* c_v`"
+    return None
+
+
+@check("plausible.py flags a volatile cast on ordinary data and not on a hardware address",
+       "`*(volatile unsigned char*)&entry->id` in 021e7cec forced a reload no developer wrote, and passed "
+       "plausible.py because only volatile locals were checked")
+def _plausible_volatile_cast():
+    P = load("plausible")
+    bad = "void f(E* e) {\n    unsigned char id = *(volatile unsigned char*)&e->id;\n}\n"
+    good = ("void g(int i) {\n    *(volatile unsigned int*)0x4000488 = 1;\n"
+            "    ((volatile int*)0x27ffdc4)[i] = 0;\n}\n")
+    if "VOLATILE-CAST" not in repr(P.findings(bad)):
+        return "plausible.py did not flag a volatile cast on a struct field"
+    if "VOLATILE" in repr(P.findings(good)):
+        return "plausible.py flagged a volatile hardware or shared-memory access: %r" % P.findings(good)
+    return None
+
+
+@check("plausible.py scans static inline helpers defined above the `// USA:` line",
+       "a volatile read inside a helper above the tag passed plausible.py, which only scanned from "
+       "the tag down, while a hardware register struct or extern there must stay unflagged")
+def _plausible_helpers_above_tag():
+    P = load("plausible")
+    tail = '// USA: func_02000000\nextern "C" ARM int f(struct S* s) {\n    return Count(s);\n}\n'
+    bad = "static inline int Count(struct S* s) { return *(volatile int*)&s->count; }\n" + tail
+    good = ("struct Regs {\n    volatile unsigned int ctrl;\n};\n"
+            "extern volatile unsigned int gVBlankCount;\n"
+            "static inline unsigned int GetDispCnt(void) { return *(volatile unsigned int*)&DISPCNT; }\n"
+            "static inline int Count(struct S* s) { return s->count; }\n" + tail)
+    if (1, "VOLATILE-CAST") not in [(l, k) for l, k, _w in P.findings(bad)]:
+        return "plausible.py did not flag the volatile cast in the helper above the tag: %r" % P.findings(bad)
+    if P.findings(good):
+        return "plausible.py flagged hardware or plain code above the tag: %r" % P.findings(good)
+    return None
+
+
+PLAUSIBLE_CASES = [
+    ("NULL-PTR-DIFF",
+     "`(int)(p - (char *)0)` exists only to emit `sub Rd, Rs, #0`",
+     'extern "C" ARM int f(char* p) {\n    int i = (int)(p - (char *)0);\n    return i + 1;\n}\n',
+     'extern "C" ARM int f(char* p, char* base) {\n    int i = p - base;\n    return i + 1;\n}\n'),
+    ("TERNARY-SELF",
+     "`w = c ? 0 : w;` stores a variable back into itself only to move its spill slot",
+     'extern "C" ARM void f(S* e, T* obj) {\n    int w = 1;\n'
+     '    if (e->mode == 1) w = obj->f311 != 0 ? 0 : w;\n    g(w);\n}\n',
+     'extern "C" ARM void f(S* e, T* obj) {\n    int w = 1;\n'
+     '    if (e->mode == 1 && obj->f311 != 0) w = 0;\n    g(w);\n}\n'),
+    ("COMPARE-MINUS-ONE",
+     "`x > -1` written for `x >= 0` only to keep an `mvn`",
+     'extern "C" ARM int f(S* o) {\n    if (o->timer > -1) {\n        return 1;\n    }\n    return 0;\n}\n',
+     'extern "C" ARM int f(S* o) {\n    if (o->timer >= 0) {\n        return 1;\n    }\n    return 0;\n}\n'),
+    ("INDEX-CAST",
+     "`tbl[(int)j]` widens an index only to break CSE",
+     'extern "C" ARM int f(const short* tbl, unsigned char j) {\n    return tbl[(int)j];\n}\n',
+     'extern "C" ARM int f(const short* tbl, unsigned char j, int x) {\n'
+     '    return tbl[j] + tbl[(unsigned char)x];\n}\n'),
+    ("FNPTR-CAST-CALL",
+     "a named function called through a cast to another signature passes an argument it does not take",
+     'extern "C" void _Z5Resetv();\nextern "C" ARM void f(char* base) {\n'
+     '    ((void (*)(char*))_Z5Resetv)(base);\n}\n',
+     'void Reset(char* base);\nextern "C" ARM void f(char* base, void* cb) {\n    Reset(base);\n'
+     '    ((void (*)(char*))cb)(base);\n}\n'),
+    ("LONGLONG-MASK",
+     "`(int)((long long)x | 0x100000000LL)` truncates a 64-bit op straight back to keep `orr Rd, Rs, #0`",
+     'extern "C" ARM int f(int x) {\n    return (int)((long long)x | 0x100000000LL);\n}\n',
+     'extern "C" ARM long long f(int x) {\n    return (long long)x | 0x100000000LL;\n}\n'),
+    ("CC-FLAG-EMULATION",
+     "a variable standing in for the CPSR flags is a transliterated listing, not C",
+     'extern "C" ARM int f(int r0) {\n    int cc;\n    cc = (int)(r0) - (int)(0x0);\n'
+     '    if (cc != 0) {\n        return 1;\n    }\n    return 0;\n}\n',
+     'extern "C" ARM int f(int value) {\n    if (value != 0) {\n        return 1;\n    }\n    return 0;\n}\n'),
+    ("ABS-ADDRESS-CAST",
+     "a data symbol replaced by its absolute address forces a second pool word and bakes in a USA address",
+     'extern int data_02249b54;\nextern "C" ARM void f(void) {\n'
+     '    g(((__typeof__(&data_02249b54))0x02249B54));\n}\n',
+     'extern int data_02249b54;\nextern "C" ARM void f(void) {\n    g(&data_02249b54);\n'
+     '    *(volatile unsigned int*)0x04000208 = 0;\n}\n'),
+    ("SPLIT-POINTER-ADD",
+     "a pointer bound and then bumped by a constant on the next statement only moves an `add`",
+     'extern "C" ARM void f(char* obj) {\n    char* p = obj;\n    p += 0x10;\n    g(p);\n}\n',
+     'extern "C" ARM void f(char* obj) {\n    char* p = obj + 0x10;\n    while (*p != 0) {\n'
+     '        p++;\n    }\n    g(p);\n}\n'),
+    ("POINTER-ROUND-TRIP",
+     "`p++; (p - 1)->x` cancels out and exists only to defeat copy propagation",
+     'struct S { int x; };\nextern "C" ARM void f(struct S* s) {\n    struct S* p = s;\n    p++;\n'
+     '    (p - 1)->x = 0;\n}\n',
+     'struct S { int x; };\nextern "C" ARM void f(struct S* s, int n) {\n    struct S* end = s + n;\n'
+     '    (end - 1)->x = 0;\n}\n'),
+    ("INT-PUN-NULL-TEST",
+     "a struct's pointer member null-tested through `*(int*)p` only changes the CSE key",
+     'struct Inner;\nstruct Outer { struct Inner* inner; };\nextern "C" ARM void f(struct Outer* p) {\n'
+     '    if (*(int*)p != 0) {\n        g(p->inner);\n    }\n}\n',
+     'struct Inner;\nstruct Outer { struct Inner* inner; };\nextern "C" ARM void f(struct Outer* p) {\n'
+     '    if (p->inner != 0) {\n        g(p->inner);\n    }\n}\n'),
+    ("NOOP-ADDR-CAST",
+     "`*(unsigned char*)&e->id` on an `unsigned char` member is an address-taken read that only breaks CSE",
+     'struct E { unsigned char id; };\nextern "C" ARM int f(struct E* e) {\n'
+     '    unsigned char v = *(unsigned char*)&e->id;\n    return v;\n}\n',
+     'struct E { unsigned char id; };\nextern "C" ARM int f(struct E* e) {\n'
+     '    unsigned char v = e->id;\n    return v;\n}\n'),
+    ("MEMBER-ADDR-NULL-TEST",
+     "the address of a member is never null, so testing it exists only for its codegen",
+     'struct Task { int active; };\nstruct Ctx { int pad; struct Task task; };\n'
+     'extern "C" ARM int f(struct Ctx* ctx) {\n    struct Task* task = &ctx->task;\n'
+     '    if (!(task != 0 && task->active != 0)) {\n        return 1;\n    }\n    return 0;\n}\n',
+     'struct Task { int active; };\nstruct Ctx { int pad; struct Task task; };\n'
+     'extern "C" ARM int f(struct Ctx* ctx) {\n    struct Task* task = &ctx->task;\n'
+     '    if (task->active == 0) {\n        return 1;\n    }\n    return 0;\n}\n'),
+    ("SELF-STORE",
+     "`p->f = p->f;` stores a member back into itself",
+     'struct Obj { int position; };\nextern "C" ARM void f(struct Obj* obj) {\n'
+     '    obj->position = obj->position;\n}\n',
+     'struct Obj { int position; };\nextern "C" ARM void f(struct Obj* obj, int x) {\n'
+     '    obj->position = x;\n}\n'),
+    ("INLINE-LOCAL-RETURN",
+     "an inline getter that copies into a local and returns it exists only to reorder a load",
+     'struct U { int id; };\nstatic inline int UnitId(struct U* u) { int id = u->id; return id; }\n'
+     '// USA: func_02000000\nextern "C" ARM int f(struct U* u) {\n    return UnitId(u);\n}\n',
+     'struct U { int id; };\nstatic inline int UnitId(struct U* u) { SDK_NULL_ASSERT(u); return u->id; }\n'
+     'inline U& Shared() { static U s; return s; }\n'
+     '// USA: func_02000000\nextern "C" ARM int f(struct U* u) {\n    return UnitId(u) + Shared().id;\n}\n'),
+    ("INLINE-OFFSET-ADD",
+     "an inline helper that only adds a constant to a pointer splits an offset the struct should carry",
+     'static inline char* Off2400(char* p) { return p + 0x2400; }\n// USA: func_02000000\n'
+     'extern "C" ARM void f(char* p) {\n    g(Off2400(p));\n}\n',
+     'struct Obj { int pad[0x900]; int field; };\n'
+     'static inline int GetField(struct Obj* o) { return o->field; }\n'
+     'static inline int Next(int id) { return id + 1; }\n// USA: func_02000000\n'
+     'extern "C" ARM void f(struct Obj* o) {\n    g(Next(GetField(o)));\n}\n'),
+    ("INLINE-OFFSET-ADD",
+     "a compiled-out SDK assert in front of the return made the helper two statements and hid it",
+     'static inline char* Off2400(char* p) { SDK_NULL_ASSERT(p); return p + 0x2400; }\n'
+     '// USA: func_02000000\nextern "C" ARM void f(char* p) {\n    g(Off2400(p));\n}\n',
+     'struct Obj { int pad[0x900]; int field; };\n'
+     'static inline int GetField(struct Obj* o) { SDK_NULL_ASSERT(o); return o->field; }\n'
+     '// USA: func_02000000\nextern "C" ARM void f(struct Obj* o) {\n    g(GetField(o));\n}\n'),
+    ("INLINE-IDENTITY",
+     "an inline that returns its own parameter, cast, only adds an inline boundary",
+     'struct A;\nstruct B;\nstatic inline struct A* AsA(struct B* b) { return (struct A*)b; }\n'
+     '// USA: func_02000000\nextern "C" ARM void f(struct B* b) {\n    g(AsA(b));\n}\n',
+     'struct A;\nstruct B;\ninline void* operator new(unsigned int, void* p) { return p; }\n'
+     '// USA: func_02000000\nextern "C" ARM void f(struct B* b) {\n    g((struct A*)b);\n}\n'),
+    ("SYMBOL-ALIAS",
+     "a `_dup`/`_arg` extern names one address twice only to force a second pool word",
+     'extern int data_ov031_02249b54;\nextern int data_ov031_02249b54_arg;\nextern "C" ARM void f(void) {\n'
+     '    g(data_ov031_02249b54, &data_ov031_02249b54_arg);\n}\n',
+     'extern int data_ov031_02249b54;\nextern "C" ARM void f(int start_arg) {\n'
+     '    g(data_ov031_02249b54, &data_ov031_02249b54, start_arg);\n}\n'),
+    ("HAND-ASM",
+     "inline `__asm(\"mov a, b\")` forced registers in four landed functions and counted them as matches",
+     '// USA: func_02000000\nextern "C" ARM void f(int* p, int* q) {\n    int* a;\n'
+     '    __asm("mov a, p");\n    g(a, q);\n}\n',
+     '// USA: func_02000000\nextern "C" ARM void f(int* p, int* q) {\n    /* asm { mov r0, r1 } */\n'
+     '    g(p, q);\n}\n'),
+]
+
+
+@check("plausible.py blocks hand asm unless asm_allow.txt names its address or function",
+       "landpr and merge_human landed asm with no gate, because only the integrators knew the allowlist")
+def _plausible_asm_allowlist():
+    P = load("plausible")
+    pragmas = load("pragmas")
+    allowed = sorted(pragmas.asm_allow())[0]
+    body = 'extern "C" ARM asm void %s(void) {\n    bx lr\n}\n'
+    if not [h for h in P.blocking("// USA: func_0200aaaa\n" + body % "func_0200aaaa") if h[1] == "HAND-ASM"]:
+        return "an asm function off the allowlist is not blocking"
+    if [h for h in P.blocking("// USA: func_%s\n" % allowed + body % ("func_" + allowed)) if h[1] == "HAND-ASM"]:
+        return "an asm function at allowlisted %s is blocking" % allowed
+    if [h for h in P.blocking(body % "Timer1OverflowInterruptRoutine") if h[1] == "HAND-ASM"]:
+        return "an untagged asm function the allowlist names is blocking"
+    return None
+
+
+def _plausible_case(kind, bad, good):
+    def run():
+        P = load("plausible")
+        got = [k for _l, k, _w in P.findings(bad)]
+        if kind not in got:
+            return "plausible.py did not flag %s (got %r)" % (kind, got)
+        if P.findings(good):
+            return "plausible.py flagged the natural form: %r" % P.findings(good)
+        return None
+    return run
+
+
+for _kind, _fault, _bad, _good in PLAUSIBLE_CASES:
+    check("plausible.py flags %s and passes the natural form" % _kind, _fault)(
+        _plausible_case(_kind, _bad, _good))
+
+
+@check("colorforce, schedforce and renum read the size argument the same way",
+       "schedforce parsed the size as hex while colorforce took decimal, so the plan's 'same "
+       "arguments' run read 2816 as 0x2816 and crashed in struct.unpack on ov000:02165490")
+def _forcing_size_arg():
+    for tool in ("frida/colorforce.py", "frida/schedforce.py", "pad/renum/renum.py"):
+        src = open(f"{KIT}/{tool}", encoding="utf-8").read()
+        if "int(sys.argv[4], 0)" not in src:
+            return "%s does not parse the size with int(x, 0)" % tool
+    return None
+
+
+@check("schedforce's combo search is not pruned by a flip's standalone score",
+       "the combo loop broke on `len(real) >= len(base_real)`, comparing each flip's score ON ITS "
+       "OWN to the BASELINE, so once one improving flip landed every combination needing a second, "
+       "individually-neutral flip was never compiled -- and the tool reported a finished search. "
+       "On ov008 0218aa24 pick_193 (real 5) closed site B and pick_95..99 (all real 8) each "
+       "attacked site A; 8 >= 7 ended the loop before pick_193+pick_95 was built")
+def _schedforce_combo_not_pruned():
+    src = open(f"{KIT}/frida/schedforce.py", encoding="utf-8").read()
+    i = src.find("combo_real = ")
+    if i < 0:
+        return "schedforce.py no longer initialises combo_real; the combo search moved"
+    body = src[i:i + 2000]
+    for bad in ("len(real) >= len(base_real)", ">= len(base_real)"):
+        if bad in body:
+            return ("the combo loop still prunes on the baseline (%r): a flip that only helps in "
+                    "combination is skipped, and the search reports itself complete" % bad)
+    if "SF_COMBO" not in body:
+        return "the combo loop has no cost bound; add SF_COMBO to cap the extra compiles"
+    return None
+
+
+@check("every .py the worker guide names actually exists in the kit",
+       "core.md's register-pressure recipe named pad/renum/pressforce.py, schedrule.py, "
+       "splitforce.py and irdump.py, and three of the four have never existed in this repository "
+       "-- no deletion in history. core.md is the one document guaranteed in every worker's "
+       "context and WORKFLOW.md tells them to grep it for their symptom, so a recipe pointing at "
+       "tools that cannot be run reads as authoritative and costs turns before it is found out")
+def _coremd_tools_exist():
+    import re as _re
+    text = open(f"{KIT}/worker_src/core.md", encoding="utf-8", errors="replace").read()
+    names = set(_re.findall(r"`([a-z_0-9/]+\.py)`", text))
+    missing = sorted(n for n in names if not os.path.exists(f"{KIT}/{n}"))
+    if missing:
+        return ("core.md names %d .py that do not exist: %s -- a worker following that recipe "
+                "chases a tool that was never written" % (len(missing), ", ".join(missing)))
+    return None
+
+
+@check("the forcing tools accept both the bare and the ov-prefixed module label",
+       "wgate/wdiff/wlist/evo_score/gate.sh take the bare label (006) while frida/ and pad/renum/ "
+       "took ov006, and nothing said so; passing the label the module-baked gate.sh had just "
+       "accepted died as a bare FileNotFoundError on .../overlays/006/delinks.txt. Three workers "
+       "in one tranche lost a run each to it")
+def _forcing_module_forms():
+    import kitpaths as _kp
+    for bare, want in (("006", "ov006"), ("ov006", "ov006"), ("main", "main"), ("15", "ov015")):
+        if _kp.module_label(bare) != want:
+            return ("module_label(%r) is %r, expected %r -- the two module conventions are still "
+                    "a trap somewhere" % (bare, _kp.module_label(bare), want))
+    tools = ("frida/schedforce.py", "frida/colorforce.py", "pad/renum/renum.py",
+             "pad/cf_multi.py", "pad/shiftdiff.py")
+    for t in tools:
+        src = open(f"{KIT}/{t}", encoding="utf-8", errors="replace").read()
+        if "module_label(" not in src:
+            return ("%s does not normalise its module argument through module_label(), so it still "
+                    "accepts only one of the two forms" % t)
+    return None
+
+
+@check("plausible flags a zero-negation that only exists to emit rsb padding",
+       "`zero = 0 - zero;` was invisible to plausible.py, so a candidate whose .text is only exactly "
+       "the slot size because of the invented padding assignment scored fitness 11 with no "
+       "implausible key and no +200 penalty. evo_score's fitness is the selection function for "
+       "every evolve run, so a construct the scorer cannot see is one evolve will select and breed "
+       "from. Live on ov008 02186388, where the honest source scores 985 and the padded one 11")
+def _plausible_zero_negate():
+    p = load("plausible")
+
+    def kinds(src):
+        return [k for _l, k, _w in p.findings(src)]
+
+    head = '// USA: func_ov008_02186388\nextern "C" ARM void f(S* s) {\n'
+    pad = head + "    int zero = 0;\n    zero = 0 - zero;\n    s->out = zero;\n}\n"
+    if "ZERO-NEGATE-PAD" not in kinds(pad):
+        return ("plausible did not flag `zero = 0 - zero;` immediately after `int zero = 0;` "
+                "(got %r): a self-negation of a provably-zero local has no meaning outside the "
+                "`rsb reg, reg, #0` it emits" % kinds(pad))
+
+    real = head + "    unsigned int m = s->m;\n    m = 0u - m;\n    s->out = m;\n}\n"
+    if kinds(real):
+        return ("plausible flagged legitimate unsigned negation of a live value (got %r): "
+                "`0u - m` on a non-constant is ordinary C89 code" % kinds(real))
+    gap = head + "    int v = 0;\n    g();\n    v = 0 - v;\n    s->out = v;\n}\n"
+    if kinds(gap):
+        return ("plausible flagged a negation whose variable may have changed since it was zeroed "
+                "(got %r): the check must require the zero to still hold" % kinds(gap))
+    return None
+
+
 @check("landpr refreshes the build report after it publishes",
        "landpr.py never ran `ninja report`, so after a pull-request landing cov.py and health kept "
        "the previous wave's count while CI showed the new one")
@@ -2965,6 +3789,61 @@ def _reserved_skipped():
     return None
 
 
+@check("the worker doc never tells a worker to edit the kit checkout",
+       "core.md said to add a deadends.md row after spending budget; a worker edited the live kit "
+       "checkout, kit_update refused the dirty tree, and the dispatcher stopped claiming")
+def _workers_leave_kit_alone():
+    core = open(f"{KIT}/worker_src/core.md", encoding="utf-8").read()
+    if re.search(r"(?i)add a row (there|to [`']?worker_src/deadends)", core):
+        return "core.md still asks workers to add rows to deadends.md"
+    if "Never edit that file or anything else in the kit checkout" not in core:
+        return "core.md no longer tells workers to keep out of the kit checkout"
+    return None
+
+
+@check("the fleet's claims issue lists no claim older than CLAIM_TTL_MIN",
+       "claim.py reaps stale claims only in the module it is claiming from, so #325 published 64 "
+       "addresses, 48 of them landed, while no worker was running")
+def _published_claims_reaped():
+    R = load("reserved")
+    C = load("claim")
+    with tempfile.TemporaryDirectory(dir=f"{SP}/handwork", ignore_cleanup_errors=True) as sp:
+        for mod, a, age in (("017", "0219d250", 3 * 86400), ("main", "02029988", 60)):
+            p = os.path.join(sp, "claims", mod, a)
+            os.makedirs(p)
+            t = time.time() - age
+            os.utime(p, (t, t))
+        got = R.claims(sp)
+    if got != [("main", "02029988")]:
+        return "claims() published %s, want only the live main 02029988 (TTL %d min)" % (got, C.CLAIM_TTL_MIN)
+    return None
+
+
+@check("reserved.py reads a pull request too large for gh pr diff from its file patches",
+       "#117 changed 900 files; gh pr diff refused it (HTTP 406 too_large) and every refresh fell back "
+       "to the last list, so no reservation changed while it was open")
+def _reserved_large_pr():
+    R = load("reserved")
+
+    def gh(*args):
+        if args[:2] == ("pr", "diff"):
+            raise RuntimeError("HTTP 406: the diff exceeded the maximum number of files\nPullRequest.diff too_large")
+        if args[0] == "api" and "pulls/117/files" in " ".join(args):
+            return "@@ -1 +1,3 @@\n+src/x.cpp:\n+    .text start:0x021fe000 end:0x021fe100\n"
+        raise RuntimeError("unexpected gh %s" % (args,))
+
+    old, R._gh = R._gh, gh
+    try:
+        diff = R.pr_diff(117) if hasattr(R, "pr_diff") else ""
+    except RuntimeError as e:
+        return "pr_diff raised on a too-large pull request: %s" % e
+    finally:
+        R._gh = old
+    if R.DIFF_START.findall(diff) != ["021fe000"]:
+        return "a too-large pull request's delink starts were not read: %r" % diff
+    return None
+
+
 @check("a hyphenated residue class ranks by its class, and a failed compile never wins",
        "`RESIDUE \\w+` cannot match LOOP-SHAPE or NO-COMPILE: flagsweep ranked LOOP-SHAPE 308 as `?`, "
        "and permorder scored NO-COMPILE -1 as 1, ahead of UNDERGEN 4 (kit PR #130)")
@@ -2997,6 +3876,67 @@ def _worker_size_of():
         return "size_of main %s printed %r, want %d (%s)" % (addr, r.stdout.strip(), size,
                                                              r.stderr.strip()[-200:])
     return None
+
+
+def _asmparked_src(src):
+    """The asmparked() function text, up to the next top-level def/class.
+
+    A trailing `^\\S` grab takes the first character of the following line instead of stopping at the
+    blank lines before it, which splices a stray letter into the extracted source.
+    """
+    m = re.search(r'(?ms)^def asmparked\(.*?(?=^\S|\Z)', src)
+    return m.group(0) if m else ""
+
+
+@check("repairsweep does not rescue a gated hand-asm file ov_recover already parked",
+       "gated/ keeps the file after ov_recover parks it to asm_park_<mod>/, and rescue_gated() copied "
+       "anything that gated MATCH into staging/ -- so main 0200c0e4, 0200c14c and 020ca650 went round "
+       "rescue -> wave refuses on asm policy -> re-park -> rescue every wave, one full rebuild each "
+       "for 0 commits. cleanwork.sh had the same guard; this was the second path into staging/")
+def _repairsweep_respects_asmpark():
+    import subprocess, tempfile, shutil, os
+    src = open(f"{KIT}/repairsweep.py", encoding="utf-8").read()
+    if "def asmparked(" not in src:
+        return "repairsweep.py has no asmparked() helper"
+    helper = _asmparked_src(src)
+    if not helper or "asmpark_" not in helper:
+        return ("asmparked() never reads wlog/asmpark_<mod>.txt, so a parked hand-asm address is "
+                "rescued from gated/ into staging/ on the MATCH verdict alone (main 020ca650, one "
+                "rebuild per wave, 0 commits)")
+    body = re.search(r'(?ms)^def rescue_gated\(\):\n(.*?)^\S', src)
+    if not body:
+        return "could not find rescue_gated() in repairsweep.py"
+    if "asmparked(" not in body.group(1):
+        return "rescue_gated() never calls asmparked(), so it promotes parked hand-asm from gated/"
+    if "parked.get(" not in body.group(1):
+        return "rescue_gated() loads asmpark but never consults it for the address it is copying"
+
+    # Exercise the real helper against a temp state dir: the listed address must be reported parked,
+    # and an unlisted one must not be. repairsweep.py is a SCRIPT (module level driver code), so it
+    # cannot be imported; extract asmparked() and exec just that, with SP pointed at the fixture.
+    sp = tempfile.mkdtemp(prefix="rs_")
+    try:
+        os.makedirs(f"{sp}/wlog", exist_ok=True)
+        listed, unlisted = "020ca650", "0216dbf0"
+        open(f"{sp}/wlog/asmpark_main.txt", "w").write(listed + "\n")
+        fn = _asmparked_src(src)
+        # Built by concatenation, not %%: fn is the real source and contains % signs in prose.
+        prog = ("SP = " + repr(sp) + "\n" + fn + "\n" +
+                'p = asmparked({"main"})\n'
+                'print("LISTED" if ' + repr(listed) + ' in p.get("main", ()) else "MISSING")\n'
+                'print("LEAKED" if ' + repr(unlisted) + ' in p.get("main", ()) else "CLEAN")\n')
+        r = subprocess.run([sys.executable, "-c", prog], capture_output=True, text=True,
+                           env=dict(os.environ, SP=sp, DQIX_STATE=sp), timeout=120)
+        out = r.stdout.split()
+        if "LISTED" not in out:
+            return ("asmparked() did not report %s as parked (stdout=%r stderr=%r) -- the rescue "
+                    "guard would promote it" % (listed, r.stdout.strip(), r.stderr.strip()[-200:]))
+        if "CLEAN" not in out:
+            return ("asmparked() reported %s as parked, but it is not in asmpark_main.txt -- the "
+                    "guard would block a landable match" % unlisted)
+        return None
+    finally:
+        shutil.rmtree(sp, ignore_errors=True)
 
 
 if __name__ == "__main__":

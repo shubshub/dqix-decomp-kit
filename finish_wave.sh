@@ -32,6 +32,10 @@ export DQIX_MAIN_REPO="${DQIX_MAIN_REPO:-$(python "$KIT/kitpaths.py" repo)}"
 REPO="$(python "$KIT/integ_tree.py" sync)" || { echo "FATAL: no integration tree"; exit 2; }
 export DQIX_REPO="$REPO"
 cd "$REPO" || { echo "FATAL: no repo"; exit 2; }
+sha1_ok() {
+  [ -f arm7_bios.bin ] || { echo "sha1 skipped: no arm7_bios.bin" >&2; return 0; }
+  ninja sha1 2>&1 | grep -q "OK"
+}
 REGION="$(python "$KIT/buildcfg.py" --region)" || exit 2
 REGION_TAG="${REGION^^}"
 CFG="$(python "$KIT/buildcfg.py" --config-dir "$OV")" || exit 2
@@ -168,11 +172,14 @@ if ! ninja check >/tmp/fw_check.log 2>&1; then
   echo "held: $SP/hold_${LBL} (nothing lost)"; exit 4
 fi
 ninja rom >/dev/null 2>&1
-if ! ninja sha1 2>&1 | grep -q "OK"; then echo "RED: sha1 mismatch — NOT pushing"; exit 5; fi
+if ! sha1_ok; then echo "RED: sha1 mismatch — NOT pushing"; exit 5; fi
 if [ "$(git rev-parse --short HEAD)" != "$H0" ]; then
+  ninja objdiff.json >/dev/null 2>&1
   python "$KIT/countfix.py" --since="$H0"
-  if [ $? -eq 3 ]; then
-    if ninja check >/tmp/fw_countfix.log 2>&1 && ninja sha1 2>&1 | grep -q "OK"; then
+  _cf=$?
+  [ "$_cf" -ne 0 ] && [ "$_cf" -ne 3 ] && echo "WARN countfix failed (exit $_cf): landed function counts were not corrected"
+  if [ "$_cf" -eq 3 ]; then
+    if ninja check >/tmp/fw_countfix.log 2>&1 && sha1_ok; then
       git add config/ && git commit -q -m "Align config with landed functions"
     else
       python "$KIT/countfix.py" --restore
@@ -204,4 +211,4 @@ fi
 rm -f "build/$REGION/report.json"; ninja report >/dev/null 2>&1
 COV=$(python -c "import json,sys;m=json.load(open(sys.argv[1]))['measures'];print('%d/%d = %.2f%%'%(m['matched_functions'],m['total_functions'],m['matched_functions_percent']))" "build/$REGION/report.json")
 python "$KIT/integ_tree.py" report
-echo "OK ${LBL}: +${GAINED} delinked (${BEFORE}->${AFTER}), green, sha1 OK, ${PUSH}, cov ${COV}, held ${SP}/hold_${LBL}"
+echo "OK ${LBL}: +${GAINED} delinked (${BEFORE}->${AFTER}), green, $([ -f arm7_bios.bin ] && echo "sha1 OK" || echo "sha1 skipped (no BIOS)"), ${PUSH}, cov ${COV}, held ${SP}/hold_${LBL}"

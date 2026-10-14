@@ -42,3 +42,5 @@
 020d16b0 NitroSDK ctrdg_proc.c, exact only with optimize_for_size off (the library's ,p build), pinned until the decomp maintainers answer the compiler-flag question
 020c745c NitroSDK stack-size reader (SDK_SYS_STACKSIZE/SDK_IRQ_STACKSIZE), exact at -O2,p and -O4,p (4-op arm branched, conditional add sp/pop), pinned until the decomp maintainers answer the compiler-flag question
 020c0cd0 DGT HMAC library code, exact only at -O4,p (copied framed epilogue on the guard exit, rotated loops), pinned until the decomp maintainers answer the compiler-flag question
+02003418 MSL __pformatter, byte-exact only at -O4,p / -O3,p (speed-built TU), pinned until the decomp maintainers answer the compiler-flag question
+020bf79c speed-built TU, size-exact only at -O4,p (handwork/020bf79c_O4p_near.cpp), pinned until the decomp maintainers answer the compiler-flag question

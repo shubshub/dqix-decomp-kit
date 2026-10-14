@@ -184,6 +184,11 @@ def rewrite(text, cxx, spell, protos, gone, moved, defs):
         parts = nested(spell[w])
         if parts and parts[-1] == w and declares_member(text, parts[-2], w):
             defined.add(w)
+        if parts and w not in defined:
+            return None, "member %s called as a free function" % spell[w]
+        if (cxx and plain(spell[w]) == w and not re.search(r'extern\s+"C"\s*\{', text)
+                and not re.search(r'extern\s+"C"[^;\n]*\b%s\s*\(' % re.escape(w), text)):
+            defined.add(w)
     used = {}
     lines = text.split("\n")
     for k, ln in enumerate(lines):

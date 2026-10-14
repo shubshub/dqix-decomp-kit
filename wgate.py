@@ -9,6 +9,7 @@ import kitpaths as _kp
 import subprocess, re, sys, os
 from elftools.elf.elffile import ELFFile
 import residue, gatelog, buildcfg
+from pragmas import refused_asm
 REPO = _kp.REPO
 # Compiler scratch and proven candidates belong to external state, never the checkout.
 SCR=f"{_kp.SP}/handwork/compile"
@@ -133,6 +134,29 @@ if SEC is None:
 # (".rodata referenced but has not been written" -> symbol at 0x0 -> link-poison). One such name
 # poisons the whole wave's integration. Force clean names at the source.
 _txt=open(SRC,encoding='utf-8',errors='ignore').read()
+# ALREADY COMMITTED IS NOT A FRESH MATCH. This compiles a file and compares bytes; it never asked
+# whether that address is already delinked, so a source for work already in the repo reported MATCH
+# exactly like new work. staging/ therefore filled with duplicates that looked like pending wins --
+# 19 of 46 in one backlog -- and every wave re-copied and re-classified them. Report it distinctly so
+# gate_staging can drop them. WGATE_ALLOW_COMMITTED=1 keeps the old behaviour for pipetest, which
+# deliberately gates already-committed functions to prove the gate still works.
+# Before compiling: a stale copy of a landed function logged NO-COMPILE for finished work.
+if not os.environ.get("WGATE_ALLOW_COMMITTED"):
+    _rngs = [(int(a, 16), int(b, 16)) for a, b in
+             re.findall(r"(?m)^\s*\.(?:text|init) start:0x([0-9a-fA-F]+) end:0x([0-9a-fA-F]+)\s*$",
+                        delinks)]
+    if any(s <= int(ADDR, 16) < e for s, e in _rngs):
+        _gate_record("ALREADY-COMMITTED", 0)
+        print("RESIDUE ALREADY-COMMITTED 0")
+        print("ALREADY-COMMITTED: this address is already delinked; the function is in the repo. "
+              "Nothing to gate or integrate.")
+        sys.exit(2)
+    if refused_asm(ADDR, SRC, _txt):
+        print("RESIDUE HAND-ASM 1")
+        print("HAND-ASM: assembly reaches the bytes by definition, so it is not a match, and the "
+              "integrator parks it. Write C, or emit BLOCKED with your best C file "
+              "(core.md, NEVER WRITE HAND ASSEMBLY).")
+        sys.exit(1)
 _defm=re.search(r'\b(?:ARM|THUMB)\b[^\n(;{]*?\b([A-Za-z_]\w*)\s*\(', _txt)
 # EXEMPT THE CONFIG'S OWN NAME. Some ROM symbols legitimately contain 0x (AccumulateFlag0x800-
 # CombatantValue is committed and delinked; SubmitFlag0x800CombatantDataA0201fca0 is waiting).
@@ -183,9 +207,11 @@ if r.returncode!=0:
     _err=(r.stdout+r.stderr).strip().replace("\t"," ")
     _first=next((l.strip() for l in _err.split("\n") if "rror" in l or "undefined" in l), "")[:120]
     fail("COMPILE-FAIL: "+_err[-400:], "NO-COMPILE", -1, _first)
+buildcfg.postcompile(_OBJ)
 _objfh=open(_OBJ,"rb"); _ELFH.append(_objfh)
 elf=ELFFile(_objfh)
-texts=[s for s in elf.iter_sections() if s.name==SEC]
+_texts=buildcfg.sections(elf,SEC)
+texts=[s for _,s in _texts]
 total=sum(s['sh_size'] for s in texts)
 # a thumb function is padded to a 4-byte boundary by the LINKER, not mwcc, so the object's
 # section can legitimately be slot-2 bytes.
@@ -198,12 +224,12 @@ if len(texts)!=1 or total not in ok_sizes:
 # r_offset; the ARM `&~3` rounding leaves 2 of its bytes unmasked -> false BYTEDIFF.
 THM_BR={10,25,30,31}          # R_ARM_THM_PC22 / THM_CALL / THM_JUMP*
 reloc=set()
-for sec in elf.iter_sections():
-    if sec.name in ('.rel'+SEC,'.rela'+SEC) and hasattr(sec,'iter_relocations'):
-        for rr in sec.iter_relocations():
-            o=rr['r_offset']
-            if rr['r_info_type'] in THM_BR: reloc.update(range(o,o+4))
-            else: reloc.update(range(o&~3,(o&~3)+4))
+_TEXT_RELS=buildcfg.relocations(elf,_texts[0][0])
+for sec in _TEXT_RELS:
+    for rr in sec.iter_relocations():
+        o=rr['r_offset']
+        if rr['r_info_type'] in THM_BR: reloc.update(range(o,o+4))
+        else: reloc.update(range(o&~3,(o&~3)+4))
 a=int(ADDR,16); mine=texts[0].data()[:slot]; orig=PRISTINE[a-BASE:a-BASE+slot]
 diffs=[i for i in range(min(len(mine),len(orig))) if i not in reloc and mine[i]!=orig[i]]
 if diffs:
@@ -257,8 +283,7 @@ for _p in glob.glob(f"{buildcfg.config_dir('main')}/**/symbols.txt", recursive=T
 def _sign24(v): return v-0x1000000 if v&0x800000 else v
 def _sign23(v): return v-0x800000 if v&0x400000 else v
 wrong=[]
-for _sec in elf.iter_sections():
-    if _sec.name not in ('.rel'+SEC,'.rela'+SEC) or not hasattr(_sec,'iter_relocations'): continue
+for _sec in _TEXT_RELS:
     for rr in _sec.iter_relocations():
         off=rr['r_offset']; typ=rr['r_info_type']
         if off+4>slot: continue
@@ -312,22 +337,5 @@ try:
 except OSError as _e:
     print(f"PRESERVATION-FAILED: {_e}")
     sys.exit(1)
-# ALREADY COMMITTED IS NOT A FRESH MATCH. This compiles a file and compares bytes; it never asked
-# whether that address is already delinked, so a source for work already in the repo reported MATCH
-# exactly like new work. staging/ therefore filled with duplicates that looked like pending wins --
-# 19 of 46 in one backlog -- and every wave re-copied and re-classified them. Report it distinctly so
-# gate_staging can drop them. WGATE_ALLOW_COMMITTED=1 keeps the old behaviour for pipetest, which
-# deliberately gates already-committed functions to prove the gate still works.
-if not os.environ.get("WGATE_ALLOW_COMMITTED"):
-    _rngs = [(int(a, 16), int(b, 16)) for a, b in
-             re.findall(r"(?m)^\s*\.(?:text|init) start:0x([0-9a-fA-F]+) end:0x([0-9a-fA-F]+)\s*$",
-                        delinks)]
-    _a = int(ADDR, 16)
-    if any(s <= _a < e for s, e in _rngs):
-        _gate_record("ALREADY-COMMITTED", 0)
-        print("RESIDUE ALREADY-COMMITTED 0")
-        print("ALREADY-COMMITTED: this address is already delinked; the bytes match because the "
-              "function is in the repo. Nothing to integrate.")
-        sys.exit(2)
 _gate_record("MATCH", 0)
 print("MATCH"); sys.exit(0)

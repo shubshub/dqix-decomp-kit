@@ -211,6 +211,7 @@ def main():
         return 2
     mod, addr = sys.argv[1], sys.argv[2].lower()
     stats = "--stats" in sys.argv
+    lean = "--lean" in sys.argv
 
     lst = listing(mod, addr)
     if not lst.strip():
@@ -224,6 +225,9 @@ def main():
     for title, body in sections(full):
         if title == "__preamble__" or any(r in title for r in RESIDENT):
             kept.append((title, body, "resident"))
+            continue
+        if lean:
+            dropped.append((title, body, 0.0))
             continue
         svocab, stags = features(body)
         score = 0.0

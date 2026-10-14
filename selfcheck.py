@@ -1151,6 +1151,42 @@ def _pragma_ratchet():
     return None
 
 
+@check("no landed source carries asm that asm_allow.txt does not name",
+       "asm transcriptions reached the tree through pre-policy fleet batches, landpr and merge_human, "
+       "which no gate checked: 10 files and 4 functions with no hand-written source had landed")
+def _landed_asm():
+    import subprocess
+    import plausible
+    import pragmas
+    allow = pragmas.asm_allow()
+    tracked = subprocess.run(["git", "-C", REPO, "ls-files", "src"], capture_output=True, text=True).stdout.split()
+    ranges = {}
+    for path in glob.glob(f"{REPO}/config/usa/arm9/delinks.txt") + glob.glob(f"{REPO}/config/usa/arm9/overlays/*/delinks.txt"):
+        cfg = os.path.dirname(path)
+        funcs = [int(a, 16) for a in re.findall(r"(?m)^\S+\s+kind:function\([^)]*\)\s+addr:0x([0-9a-fA-F]+)",
+                                                 read(f"{cfg}/symbols.txt") or "")]
+        for name, body in re.findall(r"(?m)^(\S[^\n]*):[ \t]*\n((?:[ \t]+[^\n]*\n?)*)", read(path) or ""):
+            for lo, hi in re.findall(r"\.text start:0x([0-9a-f]+) end:0x([0-9a-f]+)", body):
+                ranges.setdefault(name, []).extend(a for a in funcs if int(lo, 16) <= a < int(hi, 16))
+    bad = []
+    for f in tracked:
+        if f not in ranges:
+            continue
+        if f.endswith(".s"):
+            off = ["%08x" % a for a in ranges[f] if "%08x" % a not in allow]
+            if off:
+                bad.append("%s (%s)" % (f, ",".join(off)))
+            continue
+        text = read(f"{REPO}/{f}") or ""
+        if plausible.ASM_SITE.search(text):
+            hits = [h[2] for h in plausible.blocking(text) if h[1] == "HAND-ASM"]
+            if hits:
+                bad.append("%s (%s)" % (f, ",".join(sorted(set(hits)))))
+    if bad:
+        return "%d landed source(s) with asm off the allowlist: %s" % (len(bad), "; ".join(bad[:6]))
+    return None
+
+
 @check("landed functions are counted by objdiff, not only matched in the ROM",
        "config that disagrees with a byte-exact source (absolute pool word, Thumb padding in a "
        "symbol size) leaves the function below 100% in the report")

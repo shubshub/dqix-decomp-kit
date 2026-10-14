@@ -208,7 +208,7 @@ def moved(base, var):
 
 def main():
     src = os.path.abspath(sys.argv[1]).replace("\\", "/")
-    mod, addr, size = sys.argv[2], int(sys.argv[3], 16), int(sys.argv[4], 16)
+    mod, addr, size = _kp.module_label(sys.argv[2]), int(sys.argv[3], 16), int(sys.argv[4], 0)
     pool_from = int(sys.argv[5], 16) if len(sys.argv) > 5 else size
     out = os.path.splitext(src)[0] + ".sf"
     os.makedirs(out, exist_ok=True)
@@ -307,9 +307,12 @@ def main():
     cfg_of = {tag: cfg for cfg, tag, desc in jobs}
     combo, combo_real = {"picks": [], "edges": []}, base_real
     tags = []
+    budget = int(os.environ.get("SF_COMBO", "0")) or len(ranked)
+    tried = 0
     for tag, desc, real, info in ranked:
-        if len(real) >= len(base_real) or exact:
+        if exact or tried >= budget:
             break
+        tried += 1
         trial = {k: combo[k] + cfg_of[tag].get(k, []) for k in combo}
         res = one(({"mode": "flip", **trial}, "combo", ""))
         if res[2] is not None and len(res[2]) < len(combo_real):
@@ -320,6 +323,7 @@ def main():
             if not combo_real:
                 exact.append("+".join(tags))
                 break
+    print("combo: tried %d/%d ranked flips on top of the running combo" % (tried, len(ranked)))
     print("flips %d; exact: %s" % (len(results), " ".join(exact) or "none"))
 
 

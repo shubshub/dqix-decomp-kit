@@ -92,11 +92,13 @@ _OBJ = f"{SCR}/wdiff_{os.getpid()}.o"
 r = subprocess.run(buildcfg.tool_command(CC) + FLAGS + ["-c", SRC, "-o", _OBJ], capture_output=True, text=True)
 if r.returncode != 0:
     fail("COMPILE-FAIL: " + (r.stdout + r.stderr)[-600:])
+buildcfg.postcompile(_OBJ)
 try:
     import io
     with open(_OBJ, "rb") as _fh:
         elf = ELFFile(io.BytesIO(_fh.read()))
-    texts = [s for s in elf.iter_sections() if s.name == SEC]
+    _texts = buildcfg.sections(elf, SEC)
+    texts = [s for _, s in _texts]
     if not texts:
         fail(f"SIZE/OVERGEN: no {SEC} emitted")
     total = sum(s['sh_size'] for s in texts)
@@ -105,14 +107,13 @@ try:
     # their bytes are meaningless here and a diff on them is noise, not a mismatch.
     THM_BR = {10, 25, 30, 31}
     reloc = set()
-    for sec in elf.iter_sections():
-        if sec.name in ('.rel' + SEC, '.rela' + SEC) and hasattr(sec, 'iter_relocations'):
-            for rr in sec.iter_relocations():
-                o = rr['r_offset']
-                if rr['r_info_type'] in THM_BR:
-                    reloc.update(range(o, o + 4))
-                else:
-                    reloc.update(range(o & ~3, (o & ~3) + 4))
+    for sec in buildcfg.relocations(elf, _texts[0][0]):
+        for rr in sec.iter_relocations():
+            o = rr['r_offset']
+            if rr['r_info_type'] in THM_BR:
+                reloc.update(range(o, o + 4))
+            else:
+                reloc.update(range(o & ~3, (o & ~3) + 4))
 
     a = int(ADDR, 16)
     mine = texts[0].data()[:slot]

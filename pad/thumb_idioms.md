@@ -1,11 +1,11 @@
 ## THUMB: `adds rD, rS, #0` IS THE REGISTER COPY — do not chase it as an idiom
 mwcc emits `adds rD, rS, #0` wherever it copies one low register to another in Thumb (`adds r6, r2,
-#0`, `adds r4, r1, #0`, `adds r7, r0, #0` in one prologue). It is not the add-zero idiom.
+#0`, `adds r4, r1, #0`, `adds r7, r0, #0` in one prologue).
 
-**Consequence: the zero accumulator is an ARM-MODE trick. In Thumb it is WRONG.** A plain
-`int n = f(x);` already compiles to `bl f; adds r7, r0, #0`. Writing `int n = 0; n = n + f(x);` in a
-Thumb function adds a spurious `movs r7, #0` and costs 4 bytes -- measured on func_ov031_0221db48,
-which sat at 11 bytes until the accumulator was removed. `r12`/`r15` are for ARM.
+**Consequence: never write a zero accumulator for it.** A plain `int n = f(x);` already compiles to
+`bl f; adds r7, r0, #0`. Writing `int n = 0; n = n + f(x);` in a Thumb function adds a spurious
+`movs r7, #0` and costs 4 bytes -- measured on func_ov031_0221db48, which sat at 11 bytes until the
+accumulator was removed.
 
 ## THE COMPILER FOLDS AN ALIAS IT CAN PROVE EQUAL — change WHEN, not WHAT
 Target keeps two pointers live (`adds r1, r4, #0` then reads `[r1, #2]` while `r4` advances). Writing

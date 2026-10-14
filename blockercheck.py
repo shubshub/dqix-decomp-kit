@@ -50,6 +50,16 @@ def rows():
     return out
 
 
+_DELINKS = {}
+
+
+def landed(r):
+    import delinked
+    if r["mod"] not in _DELINKS:
+        _DELINKS[r["mod"]] = [open(p, encoding="utf-8", errors="ignore").read() for p in delinked.files(r["mod"])]
+    return delinked.covers(int(r["addr"], 16), _DELINKS[r["mod"]])
+
+
 def unfinished(r):
     # A size class only names an IDIOM while the gap is small. `UNDERGEN 8360` on a 0x23a0 function
     # is a worker that did not finish writing it, and no recipe addresses that -- counting those as
@@ -99,7 +109,7 @@ def main():
         # are each short for their own reason -- that is new work, and the hold bought nothing.
         seen = {}
         for r in rs:
-            if r["epoch"] > anchor and r["addr"] not in doc:
+            if r["epoch"] > anchor and r["addr"] not in doc and not landed(r):
                 seen.setdefault(r["addr"], []).append(r)
         pending = {a: v[-1] for a, v in seen.items() if len(v) > 1}
         # DISTINCT FUNCTIONS ARE THE CRACKING SIGNAL, even though repeats are the HOLD signal. Eight

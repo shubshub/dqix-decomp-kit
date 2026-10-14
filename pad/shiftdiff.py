@@ -20,7 +20,7 @@ import buildcfg  # noqa: E402
 
 REPO = _kp.REPO
 mod, addr, src = sys.argv[1], int(sys.argv[2], 16), sys.argv[3]
-mod = mod if mod == "main" or mod.startswith("ov") else "ov%03d" % int(mod)
+mod = _kp.module_label(mod)
 obj = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_shiftdiff_%d.o" % os.getpid())
 r = subprocess.run(buildcfg.tool_command(buildcfg.cc_path(None)) + list(buildcfg.FLAGS) + ["-c", os.path.abspath(src), "-o", obj],
                    capture_output=True, text=True, cwd=REPO)

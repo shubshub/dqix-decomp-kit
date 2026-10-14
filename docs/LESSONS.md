@@ -26,12 +26,7 @@ re-measure one of those before citing it.
 - Command-line `-opt noprop`, `-opt nocse` and similar switches are accepted and ignored by mwccarm
   2.0. Only the `#pragma` form changes codegen, so a flag test can falsely show "no difference".
 - Copy propagation is on in the ROM. When a function looks like it needs `opt_propagation off`,
-  write a pointer round-trip (`T* p = &g; p++; (p - 1)->f(...)`) or an inline accessor instead.
-  The integer form folds; only pointer arithmetic survives the pass (colorsweep `r27`).
-- An object whose type carries an alignment qualifier, or inline asm in the function, makes mwcc
-  skip every IR optimizer pass for that function. Signature: the ROM recomputes addresses after
-  every call and hoists nothing. Try `__attribute__((aligned(N)))` on the touched object first
-  (colorsweep `r62`).
+  route the access through a plain local or an inline accessor instead.
 
 ### Registers
 
@@ -44,8 +39,6 @@ re-measure one of those before citing it.
   (`pad/renum/renum.py`) instead of reasoning about it.
 - A local that does not keep its own vreg (loop-body narrow loads, CSE'd loads, offset splits, pool
   loads) ignores declaration order. Check with `pad/renum/vdump.py` before moving declarations.
-- Swapping a callee-saved pair by splitting declaration from definition works only when the two
-  definitions are adjacent; across others it rotates every register in between.
 - Scratch registers (r0-r3, ip) follow operand order of the operation that feeds them; declaration
   order does nothing there. Of two values created in the same pass, the one created later gets the
   lower register.
@@ -70,7 +63,6 @@ re-measure one of those before citing it.
   scheduling stop at that boundary. `pad/renum/genct.py` prints the counts.
 - An address or index computation with one consumer is folded; with two it is materialised. One law
   behind several "offset" and "missing add" residues.
-- `volatile` breaks CSE; a plain cast does not.
 - A struct declared smaller than the real object puts every access to it in the worst-case alias
   set and adds dependency edges the ROM lacks. Give structs their true size.
 
@@ -81,9 +73,6 @@ re-measure one of those before citing it.
   `pad/framemap.py`. A frame of the wrong size is never a colouring problem.
 - A global's true size and field layout come from every access in the image, not from the offsets
   one function touches: `python pad/objmap.py <arm9|ovNNN> 0x<addr> [more modules]`.
-- A duplicate pool word (the ROM holds one address twice): write the second use as an absolute
-  address, `((__typeof__(&sym))0xADDR)` (colorsweep `r13`), or add an alias symbol of size 0 in
-  `symbols.txt`.
 - A small integer loaded from the pool next to overlay loading is an overlay ID. Write
   `OVERLAY_ID(n)` from `System/OverlayId.h`; the config carries `kind:overlay_id` relocations
   (`ovidrelocs.py`). No C constant reproduces a relocated load.
@@ -106,7 +95,10 @@ re-measure one of those before citing it.
 ### Linking and the config
 
 - `-nodead` is forced (mwldarm takes at most twelve `-force_active`; the LCF `FORCE_ACTIVE` block is
-  parsed but is not a dead-strip root). Anything mwcc emits stays in the link.
+  parsed but is not a dead-strip root). Anything mwcc emits stays in the link, except an inline
+  (multidef) function nothing in its object references: the decomp's `tools/mwcc.py` empties it after
+  each compile, as the original `-dead` link stripped it, and the gate tools apply the same step
+  through `buildcfg.postcompile()`.
 - An out-of-line `Class::Class()` emits both the complete and the `[base]` constructor; the unused
   copy shifts every later function. Define the mangled symbol as a free function
   (`extern "C" Cls* _ZN3ClsC1Ev(Cls* self)`) or leave the range to the delinked binary.

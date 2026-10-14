@@ -90,11 +90,25 @@ def runs_for(addr):
     return sorted(runs, key=lambda r: r["start"])
 
 
+def reserve(mod, addr, path=None):
+    path = path or f"{SP}/wlog/evolve_queue.txt"
+    entry = f"{'main' if mod == 'main' else 'ov' + mod.removeprefix('ov')}:{addr}"
+    try:
+        held = {l.strip().split(":")[-1].lower() for l in open(path, encoding="utf-8") if ":" in l}
+    except OSError:
+        held = set()
+    if addr not in held:
+        with open(path, "a", encoding="utf-8", newline="\n") as fh:
+            fh.write(entry + "\n")
+
+
 def main():
     if len(sys.argv) < 2:
-        print("usage: evocap.py <addr>")
+        print("usage: evocap.py <addr> [--reserve <main|NNN>]")
         return 2
     addr = sys.argv[1].lower()
+    if "--reserve" in sys.argv:
+        reserve(sys.argv[sys.argv.index("--reserve") + 1], addr)
     cap_usd = knob("EVOCAP_USD", 150.0)
     cap_flat = knob("EVOCAP_FLAT", 2)
     runs = runs_for(addr)

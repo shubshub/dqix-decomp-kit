@@ -8,6 +8,7 @@ other function the wgate verdict gives the fitness and wdiff's differing runs gi
 """
 import os as _kpos, sys as _kpsys
 _kpsys.path.insert(0, _kpos.path.dirname(_kpos.path.dirname(_kpos.path.abspath(__file__))))
+import hashlib
 import kitpaths as _kp
 import json
 import os
@@ -84,19 +85,31 @@ def wgate_fitness(verdict):
     return 200 + 10 * n if cls in ("UNDERGEN", "OVERGEN", "SIZE") else n
 
 
+MAXRUNS = 4096
+
+
 def sites(path):
     r = subprocess.run([sys.executable, KIT + "/wdiff.py", MOD, ADDR, path], cwd=REPO,
-                       capture_output=True, text=True, env=dict(os.environ, WDIFF_CTX="0"))
+                       capture_output=True, text=True,
+                       env=dict(os.environ, WDIFF_CTX="0", WDIFF_MAXRUNS=str(MAXRUNS)))
+    return sig_from_wdiff(r.stdout)
+
+
+def sig_from_wdiff(out):
     runs = []
-    for m in re.finditer(r"(?m)^\s*\*0x([0-9a-fA-F]+)\s", r.stdout):
+    seen = []
+    for m in re.finditer(r"(?m)^\s*\*0x([0-9a-fA-F]+)\s(.*)$", out):
         off = int(m.group(1), 16)
+        seen.append("%x %s" % (off, " ".join(m.group(2).split())))
         if runs and off - runs[-1][1] <= 0x10:
             runs[-1][1] = off
         else:
             runs.append([off, off])
     labels = ["%x" % a if a == b else "%x-%x" % (a, b) for a, b in runs]
-    m = re.search(r"BYTEDIFF (\d+) bytes", r.stdout)
     sig = ",".join(labels[:6]) + ("+%d" % (len(labels) - 6) if len(labels) > 6 else "")
+    if seen:
+        sig += "~" + hashlib.sha1("\n".join(seen).encode()).hexdigest()[:8]
+    m = re.search(r"BYTEDIFF (\d+) bytes", out)
     return sig, int(m.group(1)) if m else None
 
 

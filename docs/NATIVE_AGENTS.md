@@ -5,6 +5,16 @@ other hosts with native subagents. Read [AGENTS.md](../AGENTS.md),
 [WORKFLOW.md](WORKFLOW.md), [FLEET.md](FLEET.md), and
 [IMPROVEMENT_LOOP.md](IMPROVEMENT_LOOP.md) first. Start with `dqix-coordinate`.
 
+## Codex on Windows
+
+- Run every command that talks to GitHub (`gh`, `git fetch`/`push`, `kit_update.py`) with
+  escalated permissions from the first attempt: the sandbox cannot see the GitHub login.
+- Run `frida/colorforce.py` and `frida/schedforce.py` escalated with a 10-minute timeout. Inside
+  the sandbox frida cannot attach to the compiler and the process hangs holding a core.
+- Bash cannot start inside the sandbox, so `.sh` scripts and the integrators run escalated too.
+- Write files with `apply_patch`, never PowerShell redirection or `Set-Content`: PowerShell 5
+  writes ANSI or UTF-16 and silently corrupts the source.
+
 ## Session and ownership
 
 Record the authorized scope, model/effort choices, concurrency, budget limits and stop state

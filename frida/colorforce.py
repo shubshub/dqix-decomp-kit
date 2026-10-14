@@ -148,7 +148,7 @@ def score(obj, R, size):
 
 
 def main():
-    src, mod, addr, size = sys.argv[1], sys.argv[2], int(sys.argv[3], 16), int(sys.argv[4], 0)
+    src, mod, addr, size = sys.argv[1], _kp.module_label(sys.argv[2]), int(sys.argv[3], 16), int(sys.argv[4], 0)
     pool_from = int(sys.argv[5], 16) if len(sys.argv) > 5 else size
     out = os.path.splitext(src)[0] + ".cf"
     os.makedirs(out, exist_ok=True)

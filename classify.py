@@ -199,9 +199,11 @@ def classify(MOD, cands, workdir=None, names=None):
                            cwd=REPO)
         if r.returncode != 0:
             out[addr] = 'COMPILE'; continue
+        buildcfg.postcompile(obj)
         try:
             elf = ELFFile(open(obj, "rb"))
-            texts = [s for s in elf.iter_sections() if s.name == _want]
+            _texts = buildcfg.sections(elf, _want)
+            texts = [s for _, s in _texts]
             # thumb is padded to 4 bytes by the LINKER, not mwcc, so the object may be slot-2.
             _ok = (slot, slot - 2) if _isa == 'thumb' else (slot,)
             if len(texts) != 1 or texts[0]['sh_size'] not in _ok:
@@ -211,15 +213,14 @@ def classify(MOD, cands, workdir=None, names=None):
             symtab = elf.get_section_by_name('.symtab')
             relocs = []
             masked = set()
-            for sec in elf.iter_sections():
-                if sec.name in ('.rel' + _want, '.rela' + _want) and hasattr(sec, 'iter_relocations'):
-                    for rr in sec.iter_relocations():
-                        # a thumb BL/BLX pair sits at a HALFWORD offset and spans 4 bytes from
-                        # r_offset; rounding down to a word leaves 2 bytes unmasked -> false BYTEDIFF.
-                        o = rr['r_offset']
-                        masked.update(range(o, o + 4) if rr['r_info_type'] in _THM_BR
-                                      else range(o & ~3, (o & ~3) + 4))
-                        relocs.append(rr)
+            for sec in buildcfg.relocations(elf, _texts[0][0]):
+                for rr in sec.iter_relocations():
+                    # a thumb BL/BLX pair sits at a HALFWORD offset and spans 4 bytes from
+                    # r_offset; rounding down to a word leaves 2 bytes unmasked -> false BYTEDIFF.
+                    o = rr['r_offset']
+                    masked.update(range(o, o + 4) if rr['r_info_type'] in _THM_BR
+                                  else range(o & ~3, (o & ~3) + 4))
+                    relocs.append(rr)
             if [i for i in range(min(len(mine), len(orig)))
                     if i not in masked and mine[i] != orig[i]]:
                 out[addr] = 'BYTEDIFF'; continue

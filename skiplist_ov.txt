@@ -1,6 +1,9 @@
 0224185c ov031 speed-mode TU (if-conversion fingerprint), pinned until the decomp maintainers answer the compiler-flag question
 022192c0 ov031 matches only under -O2,p (evidence: gate), NHTTP-like library code, pinned until the decomp maintainers answer the compiler-flag question
 0221c5ac ov031 matches only under -O2,p (evidence: gate), NHTTP-like library code, pinned until the decomp maintainers answer the compiler-flag question
+02207f10 ov031 BER/TLV parser, byte-exact only under -opt speed (inline epilogue at each early return; handwork/ov031_speed/02207f10_optspeed_exact.cpp), pinned until the decomp maintainers answer the compiler-flag question
+0220b218 ov031 size-exact only at -O4,p / -O3,p (REGPERM 62 there, OVERGEN 4 at -O2; handwork/ov031_speed/0220b218_O4p_regperm62.cpp), pinned until the decomp maintainers answer the compiler-flag question
+02240890 ov031 NHTTP-like URL parser, speed-mode TU (if-conversion fingerprint: unpredicated 4-insn error arms, right at -O2,p; handwork/ov031_speed/02240890.cpp), pinned until the decomp maintainers answer the compiler-flag question
 021dbdec ov027 exact only at -O2,p + aligned extern (WM/wireless-like code), pinned until the decomp maintainers answer the compiler-flag question
 021dc680 ov027 NitroSDK MB_Init, speed-mode TU (4-op arm branched, callee-saved ladder of the ,p build), pinned until the decomp maintainers answer the compiler-flag question
 021d9e9c ov027 NitroSDK MB_ReadSegment, exact only with optimize_for_size off (speed-build spill choice), pinned until the decomp maintainers answer the compiler-flag question

@@ -46,7 +46,7 @@ const KIT = PATHS.kit
 const SP = PATHS.sp
 const REPO = PATHS.repo
 const SCORER = `cd ${REPO} && python ${KIT}/pad/evo_score.py ${MOD} ${ADDR}`
-const CAPCHECK = `python ${KIT}/evocap.py ${ADDR}`
+const CAPCHECK = `python ${KIT}/evocap.py ${ADDR} --reserve ${MOD}`
 const CASEDIFF = ADDR === '02061c04' ? `     and     python ${KIT}/pad/caseresidue.py <file> --all` : ''
 
 let seed = ((A.seed || 20260910) >>> 0) || 1

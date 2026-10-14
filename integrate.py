@@ -21,6 +21,7 @@ Anything that fails is moved out of src/ to a stage dir so it cannot poison the 
 import os as _kpos, sys as _kpsys
 _kpsys.path.insert(0, _kpos.path.dirname(_kpos.path.abspath(__file__)))
 import kitpaths as _kp
+import plausible as _plausible
 import bisect
 import glob
 import importlib.util as _ilu
@@ -319,11 +320,8 @@ newdelinks = delinks
 RELOCS, RELOCS_TOUCHED = None, {}
 os.makedirs(f"{SP}/wlog", exist_ok=True)
 
-ASMPAT = re.compile(r'(?m)^\s*asm\b|\basm\s+(?:void|int|unsigned|char|long|short)\b')
-ASM_ALLOW = set()
-for _l in open(f"{KIT}/asm_allow.txt", encoding="utf-8").read().splitlines():
-    _l = _l.split('#', 1)[0].strip()
-    if _l: ASM_ALLOW.add(_l.split()[0].lower())
+from pragmas import HAND_ASM as ASMPAT, asm_allow
+ASM_ALLOW = asm_allow()
 
 ORIGINAL = {}
 for f, addr in pending:
@@ -350,6 +348,12 @@ for f, addr in pending:
     # to batch. The allowlist is the single control point for both integrators.
     if addr not in ASM_ALLOW and ASMPAT.search(open(f, encoding="utf-8", errors="ignore").read()):
         print(f"ASM-SKIP {f} @0x{addr}: hand-asm and not on the asm allowlist — SKIP")
+        fails.append((f, addr))
+        continue
+
+    held = _plausible.hold(f, MOD, addr)
+    if held:
+        print(f"IMPLAUSIBLE {f} @0x{addr}: {','.join(held)} — held for cleanwork, SKIP")
         fails.append((f, addr))
         continue
 
@@ -425,12 +429,14 @@ for f, addr in pending:
         fails.append((f, addr))
         continue
 
+    buildcfg.postcompile(obj)
     elf = ELFFile(open(obj, "rb"))
     secname = "." + sec
     # A .init function emits no .text at all, and its relocations live in .rel.init -- looking only
     # at .text reported total=0x0 and rejected byte-exact files.
-    texts = [s for s in elf.iter_sections() if s.name == secname]
-    text_index = next((i for i, s in enumerate(elf.iter_sections()) if s.name == secname), None)
+    _texts = buildcfg.sections(elf, secname)
+    texts = [s for _, s in _texts]
+    text_index = _texts[0][0] if _texts else None
     total = sum(s["sh_size"] for s in texts)
     slot = size_of(addr)
     if slot is None:
@@ -447,14 +453,13 @@ for f, addr in pending:
 
     # Mask relocated bytes: bl targets and pool words are linker-resolved and meaningless here.
     reloc_off = set()
-    for s in elf.iter_sections():
-        if s.name in (".rel" + secname, ".rela" + secname) and hasattr(s, "iter_relocations"):
-            for rr in s.iter_relocations():
-                o = rr["r_offset"]
-                # A thumb BL/BLX pair sits at a HALFWORD offset and spans 4 bytes; `&~3` would
-                # leave 2 of them unmasked and report a false BYTEDIFF.
-                reloc_off.update(range(o, o + 4) if rr["r_info_type"] in _THM_BR
-                                 else range(o & ~3, (o & ~3) + 4))
+    for s in buildcfg.relocations(elf, text_index):
+        for rr in s.iter_relocations():
+            o = rr["r_offset"]
+            # A thumb BL/BLX pair sits at a HALFWORD offset and spans 4 bytes; `&~3` would
+            # leave 2 of them unmasked and report a false BYTEDIFF.
+            reloc_off.update(range(o, o + 4) if rr["r_info_type"] in _THM_BR
+                             else range(o & ~3, (o & ~3) + 4))
 
     mine = texts[0].data()[:slot]
     orig = PRISTINE[a - BASE:a - BASE + slot]
@@ -559,6 +564,10 @@ for f, addrs in sorted(TU.items()):
     if not all(x in ASM_ALLOW for x in addrs) and ASMPAT.search(open(f, encoding="utf-8", errors="ignore").read()):
         tu_fail(f, addrs, "ASM-SKIP", "hand-asm and not on the asm allowlist")
         continue
+    held = _plausible.hold(f, MOD, addrs[0])
+    if held:
+        tu_fail(f, addrs, "IMPLAUSIBLE", ",".join(held) + " -- held for cleanwork")
+        continue
 
     head, blocks = delink_blocks(newdelinks)
     keep, dropped, blocked, at = [], [], None, None
@@ -585,10 +594,11 @@ for f, addrs in sorted(TU.items()):
     if r.returncode != 0:
         tu_fail(f, addrs, "COMPILE", (r.stdout + r.stderr)[-300:])
         continue
+    buildcfg.postcompile(obj)
     elf = ELFFile(open(obj, "rb"))
     symtab = elf.get_section_by_name(".symtab")
     sections = list(elf.iter_sections())
-    tidx = [i for i, s in enumerate(sections) if s.name == "." + sec]
+    tidx = [i for i, _ in buildcfg.sections(elf, "." + sec)]
     if [sections[i]["sh_size"] for i in tidx] != slots:
         tu_fail(f, addrs, "SIZE", f"{[hex(sections[i]['sh_size']) for i in tidx]} want {[hex(x) for x in slots]}")
         continue

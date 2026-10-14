@@ -386,108 +386,12 @@ BAREDECL = re.compile(r"^\s*(?:unsigned |signed |const |static |volatile )*[\w:]
                       r"%s\s*;\s*$" % IDENT)
 
 
-def r7_decl_split(text):
-    """`T x = e;` -> `T x;` ... `x = e;`.
-
-    Splitting moves the point where the value becomes live without moving the declaration,
-    which is the other half of recipe #9: callee-saved registers follow definition order, so a
-    value defined later takes a later register even though the declaration stayed put.
-    """
-    out = []
-    lines = text.split("\n")
-    for i, ln in enumerate(lines):
-        m = DECL.match(ln)
-        if not m:
-            continue
-        indent, typ, name, expr = m.groups()
-        if "(" in expr:                      # a call may not be moved across other statements
-            continue
-        new = list(lines)
-        new[i] = "%s%s%s;\n%s%s = %s;" % (indent, typ, name, indent, name, expr)
-        out.append(("declsplit:%s" % name, "\n".join(new)))
-    return out
-
-
-def r8_decl_hoist(text):
-    """Move one declaration up to the head of its block: changes definition ORDER, not meaning.
-
-    Only fires for a declaration whose initialiser reads nothing defined in between, so the
-    hoisted statement computes exactly the same value.
-    """
-    out = []
-    lines = text.split("\n")
-    for i, ln in enumerate(lines):
-        m = DECL.match(ln)
-        if not m:
-            continue
-        indent, typ, name, expr = m.groups()
-        if "(" in expr:
-            continue
-        # find the start of this block
-        start = None
-        for j in range(i - 1, -1, -1):
-            if lines[j].rstrip().endswith("{"):
-                start = j + 1
-                break
-        if start is None or start >= i:
-            continue
-        between = "\n".join(lines[start:i])
-        reads = set(re.findall(IDENT, expr))
-        writes = set()
-        for b in lines[start:i]:
-            mm = re.match(r"^\s*(?:[\w:]+\s*\**\s*)?(%s)\s*(?:=|\+\+|--|[-+*/&|^]=)" % IDENT, b)
-            if mm:
-                writes.add(mm.group(1))
-        if reads & writes or re.search(r"\b%s\b" % re.escape(name), between):
-            continue
-        new = lines[:start] + [ln] + lines[start:i] + lines[i + 1:]
-        out.append(("declhoist:%s" % name, "\n".join(new)))
-    return out
-
-
-def r12_zero_accumulator(text):
-    """`T x = e;` -> `T x = 0; x = x + e;`, which makes mwcc EMIT an `add rD, rS, #0`.
-
-    For the whole family that comes out exactly 4 bytes SHORT with one missing instruction, the
-    target holds a redundant register copy that clean C never needs. A zero-initialised accumulator
-    is the one construct that reliably produces one: mwcc folds the value but still emits the
-    arithmetic. Committed proof is SumKeyedLookups02086bf4 -- `short acc = 0; acc = acc + f();`
-    compiles to `bl f; add r0, r0, #0; lsl r4, r0, #0x10`. Only 6 of 11717 matched functions contain
-    that instruction, so it is a deliberate idiom rather than noise.
-
-    Meaning-preserving: adding zero to the initialiser cannot change an integer result. Restricted
-    to integer-typed declarations, since it must not touch pointers or floats.
-    """
-    out = []
-    lines = text.split("\n")
-    # DECL is anchored ^...$ and compiled WITHOUT re.M, so it only matches a single line -- every
-    # other rule feeds it one line at a time and this one must too.
-    for i, ln in enumerate(lines):
-        m = DECL.match(ln)
-        if not m:
-            continue
-        indent, typ, name, expr = m.groups()
-        t = typ.strip()
-        if "*" in typ or t.split()[-1] not in ("int", "short", "char", "long"):
-            continue
-        for op in ("+", "-"):
-            # `x = 0; x = x + e` gives add-rD-rS-0; `x = 0; x = e - x` gives sub-rD-rS-0, which is
-            # exactly the residual reported for 020df77c.
-            rhs = "%s + %s" % (name, expr) if op == "+" else "%s - %s" % (expr, name)
-            new = lines[:i] + ["%s%s%s = 0;" % (indent, typ, name),
-                               "%s%s = %s;" % (indent, name, rhs)] + lines[i + 1:]
-            out.append(("zeroacc%s:%s" % (op, name), "\n".join(new)))
-    return out
-
-
 def r11_decl_to_function_scope(text):
     """`{ ... T x = e; ... }` -> `T x;` at FUNCTION scope + `x = e;` left in place.
 
-    r8 only lifts a declaration to the head of its OWN block, which cannot change how it ranks
-    against a variable declared at function scope. mwcc orders callee-saved candidates by where the
-    DECLARATION sits at function scope, and anything declared in an inner block ranks after all of
-    them regardless of where it is assigned -- so a block-scoped value can never take the lower
-    register while a function-scope one wants it.
+    mwcc orders callee-saved candidates by where the DECLARATION sits at function scope, and
+    anything declared in an inner block ranks after all of them regardless of where it is assigned
+    -- so a block-scoped value can never take the lower register while a function-scope one wants it.
 
     Measured on 0209ed0c: `unsigned char total` declared inside the `if` always lost r6 to `int i`.
     Emitting `unsigned char total;` ABOVE `int i;` and leaving `total = ...;` in place closed the
@@ -510,11 +414,6 @@ def r11_decl_to_function_scope(text):
         if not m:
             continue
         indent, typ, name, expr = m.groups()
-        # No guard on the initialiser here, unlike r8. r8 MOVES the computation and so must prove
-        # nothing in between changes its inputs; r11 leaves the assignment exactly where it is and
-        # moves only the declaration, which cannot change evaluation order or meaning. r8's
-        # `"(" in expr` guard would reject `*(unsigned char*)(p + 0x8e07)` -- the very case that
-        # closed 0209ed0c.
         if not lines[i].startswith(indent + typ.split()[0]):
             continue
         decl = "    %s%s;" % (typ, name)
@@ -618,84 +517,6 @@ def r14_decl_move(text):
                 for slot, ln in zip(run, order):
                     new[slot] = ln
                 out.append(("declmove:%d->%d@%d" % (src, dst, run[0]), "\n".join(new)))
-    return out
-
-
-def r15_zero_accumulator_assign(text):
-    """`x = e;` -> `x = 0; x = x + e;` for an integer local ALREADY declared above.
-
-    r12 does this for a DECLARATION only, so a residue that lives on a plain assignment -- a call
-    result copied into a variable that already exists -- was never reachable by the sweep, and
-    `core.md` told workers to report `add-zero` and move on. The flagship example it called
-    unbeatable after ~73 configurations, func_ov000_02153e40, is committed as exactly this shape:
-    `int n = 0; n = n + f(...);`. Same law as r12: mwcc folds the zero but still emits the
-    arithmetic, giving the `add rD, rS, #0` clean C never produces.
-
-    Meaning-preserving: the assignment overwrites x, so zeroing it first cannot change the result.
-    Integer locals only -- never pointers or floats.
-    """
-    out = []
-    lines = text.split("\n")
-    intdecl = re.compile(r"^\s*(?:unsigned |signed |const )*(int|short|char|long)\s+(%s)\s*[;=]" % IDENT)
-    ints = {m.group(2) for l in lines for m in [intdecl.match(l)] if m}
-    assign = re.compile(r"^(\s*)(%s)\s*=\s*([^;=][^;]*);\s*$" % IDENT)
-    for i, ln in enumerate(lines):
-        m = assign.match(ln)
-        if not m:
-            continue
-        indent, name, expr = m.groups()
-        if name not in ints or expr.strip().startswith("0"):
-            continue
-        for op in ("+", "-"):
-            rhs = "%s + %s" % (name, expr) if op == "+" else "%s - %s" % (expr, name)
-            new = lines[:i] + ["%s%s = 0;" % (indent, name),
-                               "%s%s = %s;" % (indent, name, rhs)] + lines[i + 1:]
-            out.append(("zeroaccassign%s:%s@%d" % (op, name, i), "\n".join(new)))
-    return out
-
-
-def r13_dup_pool_literal(text):
-    """`&data_x` -> `((__typeof__(&data_x))0xADDR)`: forces a SECOND literal-pool word.
-
-    mwcc folds every reference to one symbol into a single pool entry, but the ROM routinely holds
-    the same address twice (one entry for the field reads, one for the call that takes the address),
-    so the candidate comes out exactly 4 bytes short with one `ldr rX,[pc,#imm]` off by 4. An
-    absolute-address constant is a different node to the compiler, so it gets its own pool word --
-    the config-free half of the alias trick in core.md, and the form already committed in
-    WaitForBattleDefaultThenFree_022357b4. `__typeof__` keeps it type-generic and is available
-    because the project compiles with `-gccext,on`. Cracked the ov031 family on 2026-08-20:
-    02223b1c, 022231f0, 0222d1b8, 0222dee0, 02237600.
-    """
-    out = []
-    pat = re.compile(r"&(data_(?:ov\d+_)?([0-9a-fA-F]{8}))\b")
-    for m in pat.finditer(text):
-        if text[:m.start()].endswith("__typeof__("):
-            continue
-        sym, hexa = m.group(1), m.group(2)
-        # `&data_x[i]` needs the ELEMENT pointer, not a pointer to the array: `__typeof__(&data_x)`
-        # is `T(*)[]`, so indexing it steps by the whole array and the candidate either fails to
-        # compile or addresses garbage. Keep the `&`, cast to `T*`.
-        if text[m.end():m.end() + 1] == "[":
-            rep = "&((__typeof__(&%s[0]))0x%s)" % (sym, hexa.upper())
-        else:
-            rep = "((__typeof__(&%s))0x%s)" % (sym, hexa.upper())
-        out.append(("dupliteral:%s@%d" % (sym, m.start()),
-                    text[:m.start()] + rep + text[m.end():]))
-    # A SYMBOL DOES NOT NEED AN `&` TO OWN A POOL WORD. `data_x[i]` and `data_x.field` reference the
-    # same address and mwcc folds them into the same single entry, so an array or struct global read
-    # at two sites comes out exactly 4 bytes short with no `&` anywhere for the pattern above to
-    # match. `ov023:021fa2f4` was that: `data_ov023_021fea0c[3].fn` in one branch and
-    # `&data_ov023_021fea0c[idx]` in another, SIZE 0x78 against slot 0x7c, and 150 compiles of this
-    # sweep moved nothing because no candidate could be generated at all.
-    use = re.compile(r"(?<![&\w.>])(data_(?:ov\d+_)?([0-9a-fA-F]{8}))\s*(\[|\.)")
-    for m in use.finditer(text):
-        sym, hexa, how = m.group(1), m.group(2), m.group(3)
-        if how == "[":
-            rep = "((__typeof__(&%s[0]))0x%s)[" % (sym, hexa.upper())
-        else:
-            rep = "((__typeof__(&%s))0x%s)->" % (sym, hexa.upper())
-        out.append(("dupliteral%s:%s@%d" % ("idx" if how == "[" else "mem", sym, m.start()),
-                    text[:m.start()] + rep + text[m.end():]))
     return out
 
 
@@ -1115,52 +936,6 @@ def r24_arm_invert(text):
     return out
 
 
-def r25_null_pointer_diff(text):
-    """Give an integer parameter a `sub Rd, Rs, #0` by taking it as `char *` and binding it back
-    with a null-pointer difference.
-
-    `x - 0` is folded by the front end in every spelling -- literal, enum, `static const`, template
-    non-type parameter, propagated local, all 19 compiler builds -- but POINTER minus a null pointer
-    is not, so `(int)(p - (char *)0)` is the only source form that reaches codegen as a real
-    subtract of an immediate zero. That instruction is also a live-range split: it copies the
-    parameter out of its incoming register, which shifts every later scratch assignment by one.
-
-    The parameter is renamed rather than the body, so nothing else in the function moves. Each
-    insertion point is a separate candidate because the binding's position in the declaration run
-    decides which register the copy lands in.
-    """
-    if "(char *)0" in text:
-        return []
-    lines = text.split(chr(10))
-    head = re.compile(r"^(.*?\b(\w+)\()([^)]*)(\)\s*\{)\s*$")
-    out = []
-    for i, ln in enumerate(lines):
-        m = head.match(ln)
-        if not m or "//" in ln or ln.lstrip().startswith("#"):
-            continue
-        params = m.group(3).split(",")
-        for pi, p in enumerate(params):
-            pm = re.match(r"^(\s*)(?:int|s32|unsigned int|unsigned|u32)\s+(\w+)\s*$", p)
-            if not pm:
-                continue
-            name = pm.group(2)
-            newp = list(params)
-            newp[pi] = "%schar *%s_p" % (pm.group(1), name)
-            hdr = m.group(1) + ",".join(newp) + m.group(4)
-            bind = "    int %s = (int)(%s_p - (char *)0);" % (name, name)
-            # after each leading declaration, and before all of them
-            spots = [i + 1]
-            for j in range(i + 1, min(i + 6, len(lines))):
-                if re.match(r"^\s*\w[\w \*]*\s+\w+\s*(=[^;]*)?;\s*$", lines[j]):
-                    spots.append(j + 1)
-                else:
-                    break
-            for s in spots:
-                new = lines[:i] + [hdr] + lines[i + 1:s] + [bind] + lines[s:]
-                out.append(("nullptrdiff@%s@%d" % (name, s - i), chr(10).join(new)))
-    return out
-
-
 def _split_top(expr, op):
     """Split `expr` at top-level occurrences of `op`, ignoring anything inside brackets.
 
@@ -1227,67 +1002,6 @@ def r26_mla_accumulator(text):
             new[i] = "%s%s%s = %s;" % (indent, typ, name, first)
             new.insert(i + 1, "%s%s = %s;" % (indent, name, rest))
             out.append(("mlaacc:%s@%s" % (tag, name), "\n".join(new)))
-    return out
-
-
-def r27_pointer_roundtrip(text):
-    """`T* p = &g;` -> `T* p = &g; p++;` with every `p->` use rewritten to `(p - 1)->`.
-
-    This is the only known C formulation that defeats copy propagation on a global's address
-    WITHOUT the pragma. mwcc cannot fold `&g` into the use while the pointer carries a pending
-    increment, so the address is materialised early and stays live across several instructions --
-    exactly the ROM shape that `#pragma opt_propagation off` was being used to buy. A later pass
-    cancels the `++` against the `- 1`, so the emitted arithmetic is unchanged and the only
-    difference is where the address is formed.
-
-    Verified on ZoneFeatures WarpScript_Opcode_6b (0x0201d044) and WarpScript_Opcode_7c
-    (0x0201e018): both matched byte-exact at the -O2 default after this rewrite, having previously
-    matched only under a file-wide `opt_propagation off`.
-
-    Two forms. A: a pointer local already initialised to `&global`. B: a global whose members are
-    read directly (`g.field`), where the file also declares `extern T g;` -- bind it to a local
-    first, then apply A. Emits the `p--` / `(p + 1)` mirror as well, since which direction the
-    compiler keeps is not predictable from the source.
-
-    Meaning-preserving only while `p` is never reassigned after its declaration, so a pointer that
-    is stepped or re-pointed later is skipped.
-    """
-    out = []
-    lines = text.split("\n")
-    decl = re.compile(r"^(\s*)([\w:]+)\s*\*\s*(%s)\s*=\s*&\s*(%s)\s*;\s*$" % (IDENT, IDENT))
-
-    def _roundtrip(src_lines, i, indent, name, step, back):
-        body = src_lines[i + 1:]
-        # A pointer that moves later would make (p - 1) a different address.
-        if re.search(r"\b%s\b\s*(?:=[^=]|\+\+|--|\+=|-=)" % re.escape(name), "\n".join(body)):
-            return None
-        body = [re.sub(r"\b%s\s*->" % re.escape(name), "(%s %s)->" % (name, back), ln)
-                for ln in body]
-        return src_lines[:i + 1] + ["%s%s%s;" % (indent, name, step)] + body
-
-    for i, ln in enumerate(lines):
-        m = decl.match(ln)
-        if not m:
-            continue
-        indent, name = m.group(1), m.group(3)
-        for step, back in (("++", "- 1"), ("--", "+ 1")):
-            new = _roundtrip(lines, i, indent, name, step, back)
-            if new:
-                out.append(("roundtrip%s:%s" % (step, name), "\n".join(new)))
-
-    # Form B: no local yet. Bind the global, then hand the result back through form A next hop.
-    for m in re.finditer(r"(?m)^\s*extern\s+(?:struct\s+)?([\w:]+)\s+(%s)\s*;\s*$" % IDENT, text):
-        typ, glob = m.group(1), m.group(2)
-        uses = [i for i, ln in enumerate(lines) if re.search(r"\b%s\s*\." % re.escape(glob), ln)]
-        if not uses:
-            continue
-        first = uses[0]
-        indent = re.match(r"\s*", lines[first]).group(0)
-        new = list(lines)
-        for i in uses:
-            new[i] = re.sub(r"\b%s\s*\." % re.escape(glob), "instance_%s->" % glob, new[i])
-        new.insert(first, "%s%s* instance_%s = &%s;" % (indent, typ, glob, glob))
-        out.append(("bindglobal:%s" % glob, "\n".join(new)))
     return out
 
 
@@ -1661,133 +1375,6 @@ def r35_chain_const_stores(text):
     return out
 
 
-_EXTERN_DECL = re.compile(
-    r"^(\s*extern\s+)(?!volatile\b)((?:const\s+|unsigned\s+|signed\s+|struct\s+|long\s+|short\s+)*"
-    r"[A-Za-z_]\w*(?:\s*\*)*\s+)([A-Za-z_]\w*)(\s*(?:\[[^\]]*\])?\s*;)\s*$")
-
-
-def r36_volatile_extern(text):
-    """Qualify an extern global volatile so its load cannot be hoisted past an independent access.
-
-    mwcc reorders a global read ahead of a preceding unrelated store, which shows up as a SCHED
-    residue -- the same instructions in the wrong order -- that no register rewrite can reach.
-    `volatile` on the declaration pins it. The ROM's shape often needs SEVERAL of a function's
-    globals pinned at once (020a1bb4 needed three), so the whole set is offered as well as each
-    one, and the all-at-once variant comes first because that is the one that landed twice.
-    """
-    lines = text.split("\n")
-    hits = [i for i, ln in enumerate(lines) if _EXTERN_DECL.match(ln)]
-    if not hits:
-        return []
-
-    def qualify(idx):
-        m = _EXTERN_DECL.match(lines[idx])
-        return "%svolatile %s%s%s" % (m.group(1), m.group(2), m.group(3), m.group(4))
-
-    out = []
-    if len(hits) > 1:
-        new = list(lines)
-        for i in hits:
-            new[i] = qualify(i)
-        out.append(("volextern:all", "\n".join(new)))
-    for i in hits:
-        new = list(lines)
-        new[i] = qualify(i)
-        out.append(("volextern:%s" % _EXTERN_DECL.match(lines[i]).group(3), "\n".join(new)))
-    return out
-
-
-def _assign_at(code):
-    """Index just past the statement's assignment operator, or None if it does not assign."""
-    depth = 0
-    for k, ch in enumerate(code):
-        if ch in "([":
-            depth += 1
-        elif ch in ")]":
-            depth -= 1
-        elif ch == "=" and depth == 0:
-            if code[k - 1:k] in ("=", "!", "<", ">", "+", "-", "*", "/", "&", "|", "^", "%"):
-                continue
-            if code[k + 1:k + 2] == "=":
-                continue
-            return k + 1
-    return None
-
-
-_PTR_DECL = re.compile(
-    r"^(\s*)((?:const\s+|unsigned\s+|signed\s+|struct\s+)*[A-Za-z_]\w*)\s*\*\s*"
-    r"([A-Za-z_]\w*)\s*(=[^;]*)?;\s*$")
-
-
-def r37_volatile_alias(text):
-    """Read a pointer's fields through a `const volatile` alias so two loads keep source order.
-
-    mwcc is free to swap two independent loads off one object, and does; the ROM's order comes back
-    when they go through a volatile-qualified alias, which forbids reordering them against each
-    other (020cdfd8, where a plain cast was inert and only `const volatile` moved the bytes).
-    Read sites only -- the alias is const, so a function that stores through the pointer keeps its
-    stores on the original name.
-    """
-    lines = text.split("\n")
-    depth = _line_depths(lines)
-    out = []
-    # PARAMETERS COUNT, and leaving them out meant the rule could not reproduce the match it was
-    # derived from: 020cdfd8's alias is on `src`, a parameter. The signature itself is never touched
-    # -- the alias is a new statement at the top of the body -- so the mangled name cannot move.
-    sites = [(i, _PTR_DECL.match(ln)) for i, ln in enumerate(lines)]
-    sites = [(i, m.group(1), m.group(2).replace("const ", "").strip(), m.group(3), i)
-             for i, m in sites if m and depth[i] >= 1
-             and not lines[i].lstrip().startswith(("//", "return"))]
-    for i, ln in enumerate(lines):
-        if depth[i] != 0 or not _strip_code(ln).rstrip().endswith("{") or "(" not in ln:
-            continue
-        sig = ln[:ln.rindex("{")]
-        j = i
-        while "(" not in sig and j > 0:
-            j -= 1
-            sig = lines[j] + sig
-        if "(" not in sig or ")" not in sig:
-            continue
-        params = sig[sig.index("(") + 1:sig.rindex(")")]
-        for part in params.split(","):
-            pm = re.match(r"\s*((?:const\s+|unsigned\s+|signed\s+|struct\s+)*[A-Za-z_]\w*)"
-                          r"\s*\*\s*([A-Za-z_]\w*)\s*$", part)
-            if pm:
-                sites.append((i, "    ", pm.group(1).replace("const ", "").strip(),
-                              pm.group(2), i))
-    for _o, indent, ctype, name, anchor in sorted(sites):
-        i = anchor
-        if ctype in _TYPEWORDS and ctype not in ("char", "int", "short", "long"):
-            continue
-        arrow = re.compile(r"(?<![.>\w])%s\s*->" % re.escape(name))
-        reads = []
-        for j in range(i + 1, len(lines)):
-            code = _strip_code(lines[j])
-            if not arrow.search(code):
-                continue
-            at = _assign_at(code)
-            if at is None or arrow.search(code[at:]):
-                reads.append(j)
-        if len(reads) < 2:
-            continue
-        if any(re.search(r"\b%s\b\s*(?:=[^=]|\+\+|--)" % re.escape(name), _strip_code(lines[j]))
-               for j in range(i + 1, reads[-1])):
-            continue
-        alias = "%s_v" % name
-        if re.search(r"\b%s\b" % re.escape(alias), text):
-            continue
-        new = list(lines)
-        for j in reads:
-            at = _assign_at(_strip_code(new[j]))
-            if at is None:
-                new[j] = arrow.sub("%s->" % alias, new[j])
-            else:
-                new[j] = new[j][:at] + arrow.sub("%s->" % alias, new[j][at:])
-        new.insert(i + 1, "%sconst volatile %s* %s = %s;" % (indent, ctype, alias, name))
-        out.append(("volalias:%s" % name, "\n".join(new)))
-    return out
-
-
 def _brace_block(lines, i):
     """(first body line, closing-brace line) for a header at line i that opens a brace, else None."""
     if not _strip_code(lines[i]).rstrip().endswith("{"):
@@ -1852,34 +1439,6 @@ def r38_guarded_do_while(text):
     return out
 
 
-# The declaration half must end in whitespace or a `*`, or it eats the first character of the name:
-# `entries = ...` matched decl="e" name="ntries" and emitted `ntries += 0x10;`.
-_PTR_ADD = re.compile(r"^(\s*)((?:[A-Za-z_]\w*[\s\*]+)*)([A-Za-z_]\w*)\s*=\s*"
-                      r"(\([^)]*\*\s*\)\s*)?([A-Za-z_]\w*)\s*\+\s*(0x[0-9a-fA-F]+|\d+)\s*;\s*$")
-
-
-def r39_split_pointer_add(text):
-    """`p = (T*)base + K;` -> `p = (T*)base; p += K;` so the `add` is not hoisted with the bind.
-
-    mwcc hoists a loop-invariant address computation ahead of the neighbouring loads; the ROM
-    computes it among them. Splitting the bind from the advance puts the `add` back where the ROM
-    has it (`0202b900`, SCHED 14 -> byte-exact). The reverse fold is offered too, for the case where
-    ours emits the `add` late.
-    """
-    out = []
-    lines = text.split("\n")
-    for i, ln in enumerate(lines):
-        m = _PTR_ADD.match(ln)
-        if not m or _line_depths(lines)[i] < 1:
-            continue
-        indent, decl, name, cast, base, off = m.groups()
-        new = list(lines)
-        new[i] = "%s%s%s = %s%s;" % (indent, decl or "", name, cast or "", base)
-        new.insert(i + 1, "%s%s += %s;" % (indent, name, off))
-        out.append(("ptrsplit:%s" % name, "\n".join(new)))
-    return out
-
-
 # The call must not contain parentheses of its own, or the capture runs past its closing paren and
 # takes the `if`'s: `GetField(bs)` became `GetField(bs))` and the test lost its own bracket.
 # The tail is allowed to be EMPTY, because the condition this rule was derived from continues on the
@@ -1920,42 +1479,6 @@ def r40_bind_call_operand(text):
     return out
 
 
-_ZERO_CMP = re.compile(r"(?<![\w>])([A-Za-z_]\w*(?:\s*(?:->|\.)\s*[A-Za-z_]\w*)*)\s*(>=|<)\s*0\b")
-_MINUS_ONE_CMP = re.compile(
-    r"(?<![\w>])([A-Za-z_]\w*(?:\s*(?:->|\.)\s*[A-Za-z_]\w*)*)\s*(>|<=)\s*-\s*1\b")
-
-
-def r41_nonfoldable_constant(text):
-    """`x >= 0` <-> `x > -1` (and `x < 0` <-> `x <= -1`): same test, one instruction apart.
-
-    A comparison against 0 folds into a `cmp` immediate; against -1 it cannot, so mwcc materialises
-    `mvn rN,#0` first. When the ROM has the extra instruction, the constant is the whole difference
-    (`0209c840`).
-
-    BOTH directions are generated. The rule shipped one-way, which is the direction we need least:
-    the sweep hill-climbs from OUR source toward the ROM, so the common case is our source carrying
-    the `mvn` the ROM does not have. `main:02081f20` sat at 23 bytes for that alone and no rule could
-    remove it.
-    """
-    out = []
-    lines = text.split("\n")
-    depth = _line_depths(lines)
-    for i, ln in enumerate(lines):
-        if depth[i] < 1 or ln.lstrip().startswith(("//", "#")):
-            continue
-        for m in _ZERO_CMP.finditer(_strip_code(ln)):
-            rep = "%s %s -1" % (m.group(1), ">" if m.group(2) == ">=" else "<=")
-            new = list(lines)
-            new[i] = ln[:m.start()] + rep + ln[m.end():]
-            out.append(("nofold:%d" % i, "\n".join(new)))
-        for m in _MINUS_ONE_CMP.finditer(_strip_code(ln)):
-            rep = "%s %s 0" % (m.group(1), ">=" if m.group(2) == ">" else "<")
-            new = list(lines)
-            new[i] = ln[:m.start()] + rep + ln[m.end():]
-            out.append(("fold:%d" % i, "\n".join(new)))
-    return out
-
-
 def r42_drop_noop_case(text):
     """Delete a `case K:` whose whole body is `return;`, letting K fall through unhandled.
 
@@ -1981,9 +1504,6 @@ def r42_drop_noop_case(text):
 
 _MEMBER_READ = re.compile(r"(?<![\w)\]])([A-Za-z_]\w*(?:\s*(?:->|\.)\s*[A-Za-z_]\w*)+)")
 _ASSIGN_OP = re.compile(r"(?<![=!<>+\-*/&|^%])=(?!=)")
-_CAST_STORE = re.compile(
-    r"^(\s*)\*\(\s*((?:unsigned|signed|const)?\s*[A-Za-z_]\w*)\s*\*\s*\)\s*"
-    r"(.+?)\s*(&|\||\^|\+|-|<<|>>)?=\s*([^;]+);\s*$")
 
 
 def r43_short_cast_in_add(text):
@@ -2003,24 +1523,6 @@ def r43_short_cast_in_add(text):
             new = list(lines)
             new[i] = ln[:m.start(1)] + "(short)" + expr + ln[m.end(1):]
             out.append(("shortcast:%s@%d" % (expr, i), "\n".join(new)))
-    return out
-
-
-def r44_volatile_split_store(text):
-    lines = text.split("\n")
-    out = []
-    for i, ln in enumerate(lines):
-        m = _CAST_STORE.match(ln)
-        if not m:
-            continue
-        indent, ctype, addr, op, rhs = m.groups()
-        ctype = " ".join(ctype.split())
-        if "volatile" in ln:
-            continue
-        vol = "%s*(volatile %s*)%s = " % (indent, ctype, addr)
-        new = list(lines)
-        new[i] = vol + ("*(%s*)%s %s %s;" % (ctype, addr, op, rhs) if op else "%s;" % rhs)
-        out.append(("volsplit@%d" % i, "\n".join(new)))
     return out
 
 
@@ -2102,66 +1604,6 @@ def r46_counter_position(text):
         for pos in range(start, bend + 1):
             new = bl[:pos] + ["%sint %s;" % (indent, name)] + bl[pos:]
             out.append(("hoist:%s@%d" % (name, pos), "\n".join(new)))
-    return out
-
-
-_R47_IF_ASSIGN = re.compile(
-    r"^(\s*)if\s*\((.*)\)\s*([A-Za-z_][\w.\->\[\]]*)\s*=\s*([^;=][^;]*);\s*$")
-
-
-def _r47_top_and_splits(cond):
-    depth, out = 0, []
-    for k, ch in enumerate(cond):
-        if ch in "([":
-            depth += 1
-        elif ch in ")]":
-            depth -= 1
-        elif depth == 0 and cond.startswith(" && ", k):
-            out.append(k)
-    return out
-
-
-def r47_ternary_store(text):
-    lines = text.split("\n")
-    out = []
-    for i, ln in enumerate(lines):
-        m = _R47_IF_ASSIGN.match(ln)
-        if not m:
-            continue
-        indent, cond, lhs, rhs = m.groups()
-        for k in _r47_top_and_splits(cond):
-            a, b = cond[:k].strip(), cond[k + 4:].strip()
-            new = list(lines)
-            new[i] = "%sif (%s) %s = %s ? %s : %s;" % (indent, a, lhs, b, rhs.strip(), lhs)
-            out.append(("ternstore@%d.%d" % (i, k), "\n".join(new)))
-    return out
-
-
-_R48_DECL = re.compile(
-    r"^(\s*)((?:struct\s+)?[A-Za-z_]\w*)\s*\*\s*([A-Za-z_]\w*)\s*=\s*&\s*([A-Za-z_]\w*)\s*->\s*"
-    r"[A-Za-z_]\w*\s*\[\s*([^\]]+?)\s*\]\s*;\s*$")
-
-
-def r48_inline_index(text):
-    lines = text.split("\n")
-    start = _r46_body(lines)
-    if start is None:
-        return []
-    sig = start - 1
-    at = sig - 1 if sig > 0 and lines[sig - 1].lstrip().startswith("//") else sig
-    out = []
-    for i, ln in enumerate(lines):
-        if i < start:
-            continue
-        m = _R48_DECL.match(ln)
-        if not m:
-            continue
-        indent, ty, name, base, idx = m.groups()
-        helper = "_AtR48_%d" % i
-        new = list(lines)
-        new[i] = "%s%s* %s = %s(%s, %s);" % (indent, ty, name, helper, base, idx)
-        new.insert(at, "static inline %s* %s(void* o, int n) { return (%s*)o + n; }" % (ty, helper, ty))
-        out.append(("inlidx:%s@%d" % (name, i), "\n".join(new)))
     return out
 
 
@@ -2252,8 +1694,6 @@ _R52_ADDR_ASSIGN = re.compile(r"^(\s*)(?:%s\s*)?([A-Za-z_]\w*)\s*=\s*([A-Za-z_]\
                               % _R52_PTR)
 _R52_WRITE = r"\s*(?:[-+*/|&^]?=(?!=)|\+\+|--)"
 _R53_COPY = re.compile(r"^(\s*)((?:unsigned |signed )?(?:int|short|long|char))\s+([A-Za-z_]\w*)\s*=\s*([^;]+?)\s*;\s*$")
-_R54_DECL = re.compile(r"^(\s*)((?:struct\s+)?[A-Za-z_]\w*)\s*\*\s*([A-Za-z_]\w*)\s*=\s*"
-                       r"\(\s*((?:struct\s+)?[A-Za-z_]\w*)\s*\*\s*\)\s*\((.+)\)\s*\+\s*([^;]+?)\s*;\s*$")
 
 
 def _r52_word(name):
@@ -2338,30 +1778,6 @@ def r53_update_in_place(text):
                                      p, fold[j])
                 out.insert(len(out) - 1, ("inplace+fold:%s@%d" % (c, k), "\n".join(fold)))
             break
-    return out
-
-
-def r54_two_def_offset(text):
-    lines = text.split("\n")
-    start = _r46_body(lines)
-    if start is None:
-        return []
-    out = []
-    for i in range(start, len(lines)):
-        m = _R54_DECL.match(lines[i])
-        if not m:
-            continue
-        ind, typ, name, cast, base, idx = m.groups()
-        if typ.split()[-1] != cast.split()[-1] or base.count("(") != base.count(")"):
-            continue
-        off = next((o for o in ("off", "off2", "off3", "byteOff") if not re.search(_r52_word(o), text)), None)
-        if off is None:
-            continue
-        new = list(lines)
-        new[i:i + 1] = ["%sint %s = %s;" % (ind, off, idx),
-                        "%s%s *= sizeof(%s);" % (ind, off, typ),
-                        "%s%s* %s = (%s*)(%s + %s);" % (ind, typ, name, typ, base, off)]
-        out.append(("twodefoff:%s@%d" % (name, i), "\n".join(new)))
     return out
 
 
@@ -2574,109 +1990,27 @@ def r61_memset_to_clear(text):
     return [("clear", new)]
 
 
-_R62_EXTERN_DATA = re.compile(r'(?m)^(\s*extern\s+(?:"C"\s+)?[^;(){}=\n]*?[A-Za-z_]\w*\s*(?:\[[^\]\n]*\])*)\s*;')
-
-
-def r62_iro_align(text):
-    picks = []
-    for m in _R62_EXTERN_DATA.finditer(text):
-        a = re.search(r"_([0-9a-fA-F]{8})\s*(?:\[|$)", m.group(1))
-        if a and int(a.group(1), 16) % 4:
-            continue
-        picks.append((not m.group(1).rstrip().endswith("]"), m))
-    if not picks:
-        return []
-    m = min(picks, key=lambda p: p[0])[1]
-    name = re.search(r"([A-Za-z_]\w*)\s*(?:\[[^\]\n]*\])*\s*$", m.group(1)).group(1)
-    return [("iroalign:%s" % name, text[:m.end(1)] + " __attribute__((aligned(4)))" + text[m.end(1):])]
-
-
-_R63_ASSIGN = re.compile(r"^(\s*)((?:(?:unsigned|signed|const|volatile|struct)\s+)*[A-Za-z_][\w:]*(?:\s*\*+\s*|\s+))?"
-                         r"([A-Za-z_]\w*)\s*=(?!=)\s*([^;]+?)\s*;\s*$")
-_R63_TIERS = (("|",), ("^",), ("&",), ("<<", ">>"), ("+", "-"), ("*", "/", "%"))
-_R63_SPLITS = ("|", "^", "&", "<<", "+", "-", "*")
-_R63_OPERAND_END = re.compile(r"[\w)\]'\"]")
-
-
-def _r63_top_ops(expr):
-    ops, depth, i, prev = [], 0, 0, ""
-    while i < len(expr):
-        ch, two = expr[i], expr[i:i + 2]
-        if ch in "([":
-            depth += 1
-        elif ch in ")]":
-            depth -= 1
-        elif depth == 0:
-            if two in ("<<", ">>", "->", "::"):
-                if two in ("<<", ">>"):
-                    ops.append((i, two))
-                i += 2
-                prev = two[-1]
-                continue
-            if two in ("&&", "||", "==", "!=", "<=", ">=", "++", "--") or ch in "?,=<>":
-                return None
-            if ch in "|^&+-*/%" and _R63_OPERAND_END.match(prev or " "):
-                ops.append((i, ch))
-        if not ch.isspace():
-            prev = ch
-        i += 1
-    return ops
-
-
-def r63_split_assign_op(text):
-    lines = text.split("\n")
-    start = _r46_body(lines)
-    if start is None:
-        return []
-    out = []
-    for i in range(start, len(lines)):
-        m = _R63_ASSIGN.match(lines[i])
-        if not m or (m.group(2) or "").strip() in ("return", "else", "case", "goto", "delete", "throw"):
-            continue
-        ind, typ, name, rhs = m.group(1), m.group(2) or "", m.group(3), m.group(4)
-        ops = _r63_top_ops(rhs)
-        if not ops:
-            continue
-        tier = next(t for t in _R63_TIERS if any(op in t for _p, op in ops))
-        at, op = [o for o in ops if o[1] in tier][-1]
-        e, k = rhs[:at].strip(), rhs[at + len(op):].strip()
-        if op not in _R63_SPLITS or not e or not k or e == name or re.search(_r52_word(name), k):
-            continue
-        if re.search(r"(?<![\w.>])(?!sizeof\b)[A-Za-z_]\w*\s*\(", k):
-            continue
-        declared = re.search(r"\b(float|double)\s+\**\s*%s\b" % re.escape(name), text)
-        if declared or "float" in typ or "double" in typ:
-            continue
-        new = list(lines)
-        new[i:i + 1] = ["%s%s%s = %s;" % (ind, typ, name, e), "%s%s %s= %s;" % (ind, name, op, k)]
-        out.append(("splitop:%s@%d" % (name, i), "\n".join(new)))
-    return out
-
-
-RULES = (r62_iro_align, r61_memset_to_clear,r60_const_extern_table,r59_reuse_earlier_local,r58_split_loop_counter,r57_call_into_preceding_if,r56_drop_last_arg,r43_short_cast_in_add,r44_volatile_split_store, r45_accumulate_or, r46_counter_position,
-         r47_ternary_store, r48_inline_index, r49_sink_into_loop, r50_narrow_flag, r51_short_spill,
-         r52_inline_address_local, r53_update_in_place, r54_two_def_offset, r55_load_then_transform,
+RULES = (r61_memset_to_clear, r60_const_extern_table, r59_reuse_earlier_local, r58_split_loop_counter,
+         r57_call_into_preceding_if, r56_drop_last_arg, r43_short_cast_in_add, r45_accumulate_or,
+         r46_counter_position, r49_sink_into_loop, r50_narrow_flag, r51_short_spill,
+         r52_inline_address_local, r53_update_in_place, r55_load_then_transform,
          r1_operand_swap, r2_compound_flip, r3_postinc_migrate, r4_decl_reorder, r5_stmt_swap,
-         r6_fold_test, r7_decl_split, r8_decl_hoist, r9_compare_flip, r10_const_local,
-         r11_decl_to_function_scope, r12_zero_accumulator, r13_dup_pool_literal, r14_decl_move,
-         r15_zero_accumulator_assign, r16_stmt_move, r18_narrow_bind, r19_ternary_split,
+         r6_fold_test, r9_compare_flip, r10_const_local, r11_decl_to_function_scope, r14_decl_move,
+         r16_stmt_move, r18_narrow_bind, r19_ternary_split,
          r20_bool_materialise, r21_cast_width, r22_inline_single_use, r23_single_exit_result,
-         r24_arm_invert, r25_null_pointer_diff, r26_mla_accumulator, r27_pointer_roundtrip,
+         r24_arm_invert, r26_mla_accumulator,
          r28_literal_in_equality_arm, r29_field_reread, r30_cse_repeat_expr, r31_hoist_loop_bound,
          r32_sink_store_into_arms, r33_field_signedness, r34_call_move_earlier,
-         r35_chain_const_stores, r36_volatile_extern, r37_volatile_alias, r38_guarded_do_while,
-         r39_split_pointer_add, r40_bind_call_operand, r41_nonfoldable_constant, r42_drop_noop_case,
-         r63_split_assign_op, r17_decl_permute)
+         r35_chain_const_stores, r38_guarded_do_while, r40_bind_call_operand, r42_drop_noop_case,
+         r17_decl_permute)
 
 
 def neighbours(text):
     """One candidate per rule, then the second of each, and so on -- NOT rule-by-rule.
 
     Concatenating whole rules meant a file with many early-rule sites spent the entire budget before
-    a later rule was ever scored. `ov023:021fa2f4` was 4 bytes short from a shared pool literal that
-    r13 fixes; r13 is 13th of 21, and 150 compiles never reached it, so the sweep reported "no
-    change" on a candidate whose score its own rule set could take from 1031 to 32. Round-robin
-    makes the budget buy breadth across rules first, which is where a crack usually is.
+    a later rule was ever scored. Round-robin makes the budget buy breadth across rules first, which
+    is where a crack usually is.
 
     r17 still goes last as a block: it enumerates permutations, and interleaving 40 of them with the
     cheap single-step rewrites would push those out of a small budget instead.
